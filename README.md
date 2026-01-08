@@ -4,7 +4,7 @@ The official Node.js SDK for **Drip** - Usage-based billing for AI agents.
 
 Drip enables real-time, per-request billing using USDC on blockchain. Perfect for AI APIs, compute platforms, and any service with variable usage patterns.
 
-[![npm version](https://badge.fury.io/js/@drip-sdk/node.svg)](https://www.npmjs.com/package/@drip-sdk/node)
+[![npm version](https://img.shields.io/npm/v/@drip-sdk%2Fnode.svg)](https://www.npmjs.com/package/@drip-sdk/node)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
 ## Installation
