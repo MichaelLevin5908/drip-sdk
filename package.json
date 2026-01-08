@@ -1,0 +1,102 @@
+{
+  "name": "@drip-sdk/node",
+  "version": "1.0.0",
+  "description": "Official Node.js SDK for Drip - Usage-based billing for AI agents",
+  "author": "Drip Team",
+  "license": "MIT",
+  "publishConfig": {
+    "access": "public"
+  },
+  "type": "module",
+  "main": "./dist/index.cjs",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": {
+        "types": "./dist/index.d.ts",
+        "default": "./dist/index.js"
+      },
+      "require": {
+        "types": "./dist/index.d.cts",
+        "default": "./dist/index.cjs"
+      }
+    },
+    "./next": {
+      "import": {
+        "types": "./dist/next.d.ts",
+        "default": "./dist/next.js"
+      },
+      "require": {
+        "types": "./dist/next.d.cts",
+        "default": "./dist/next.cjs"
+      }
+    },
+    "./express": {
+      "import": {
+        "types": "./dist/express.d.ts",
+        "default": "./dist/express.js"
+      },
+      "require": {
+        "types": "./dist/express.d.cts",
+        "default": "./dist/express.cjs"
+      }
+    },
+    "./middleware": {
+      "import": {
+        "types": "./dist/middleware.d.ts",
+        "default": "./dist/middleware.js"
+      },
+      "require": {
+        "types": "./dist/middleware.d.cts",
+        "default": "./dist/middleware.cjs"
+      }
+    }
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "tsup",
+    "dev": "tsup --watch",
+    "prepublishOnly": "npm run build",
+    "clean": "rm -rf dist",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "keywords": [
+    "drip",
+    "billing",
+    "usage-based",
+    "metered",
+    "payments",
+    "ai",
+    "agents",
+    "llm",
+    "openai",
+    "api",
+    "sdk",
+    "typescript",
+    "express",
+    "nextjs"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/MichaelLevin5908/drip-sdk.git"
+  },
+  "bugs": {
+    "url": "https://github.com/MichaelLevin5908/drip-sdk/issues"
+  },
+  "homepage": "https://github.com/MichaelLevin5908/drip-sdk#readme",
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "devDependencies": {
+    "tsup": "^8.0.1",
+    "typescript": "^5.9.3",
+    "vitest": "^1.0.0"
+  }
+}
