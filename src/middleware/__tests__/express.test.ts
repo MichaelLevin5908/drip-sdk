@@ -311,6 +311,7 @@ describe('getDripContext', () => {
       charge: {
         success: true,
         usageEventId: 'usage_123',
+        isReplay: false,
         charge: {
           id: 'chg_123',
           amountUsdc: '0.01',
