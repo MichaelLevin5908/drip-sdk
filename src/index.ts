@@ -959,6 +959,7 @@ export class Drip {
    * Pings the Drip API to check connectivity and measure latency.
    *
    * @returns Health status with latency information
+   * @throws {DripError} If the request fails or times out
    *
    * @example
    * ```typescript
@@ -969,20 +970,69 @@ export class Drip {
    * ```
    */
   async ping(): Promise<{ ok: boolean; status: string; latencyMs: number; timestamp: number }> {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), this.timeout);
+
+    // Safely construct health endpoint URL
+    let healthBaseUrl = this.baseUrl;
+    if (healthBaseUrl.endsWith('/v1/')) {
+      healthBaseUrl = healthBaseUrl.slice(0, -4);
+    } else if (healthBaseUrl.endsWith('/v1')) {
+      healthBaseUrl = healthBaseUrl.slice(0, -3);
+    }
+    healthBaseUrl = healthBaseUrl.replace(/\/+$/, '');
+
     const start = Date.now();
-    const response = await fetch(`${this.baseUrl.replace('/v1', '')}/health`, {
-      headers: {
-        Authorization: `Bearer ${this.apiKey}`,
-      },
-    });
-    const latencyMs = Date.now() - start;
-    const data = await response.json() as { status: string; timestamp: number };
-    return {
-      ok: data.status === 'healthy',
-      status: data.status,
-      latencyMs,
-      timestamp: data.timestamp,
-    };
+
+    try {
+      const response = await fetch(`${healthBaseUrl}/health`, {
+        signal: controller.signal,
+        headers: {
+          Authorization: `Bearer ${this.apiKey}`,
+        },
+      });
+      const latencyMs = Date.now() - start;
+
+      // Try to parse JSON, but handle non-JSON responses gracefully
+      let status = 'unknown';
+      let timestamp = Date.now();
+
+      try {
+        const data = await response.json() as { status?: string; timestamp?: number };
+        if (typeof data.status === 'string') {
+          status = data.status;
+        }
+        if (typeof data.timestamp === 'number') {
+          timestamp = data.timestamp;
+        }
+      } catch {
+        // Non-JSON response, derive status from HTTP code
+        status = response.ok ? 'healthy' : `error:${response.status}`;
+      }
+
+      // For non-OK HTTP responses, set appropriate status
+      if (!response.ok && status === 'unknown') {
+        status = `error:${response.status}`;
+      }
+
+      return {
+        ok: response.ok && status === 'healthy',
+        status,
+        latencyMs,
+        timestamp,
+      };
+    } catch (error) {
+      if (error instanceof Error && error.name === 'AbortError') {
+        throw new DripError('Request timed out', 408, 'TIMEOUT');
+      }
+      throw new DripError(
+        error instanceof Error ? error.message : 'Unknown error',
+        0,
+        'UNKNOWN',
+      );
+    } finally {
+      clearTimeout(timeoutId);
+    }
   }
 
   // ==========================================================================
