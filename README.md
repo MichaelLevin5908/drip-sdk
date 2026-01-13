@@ -4,7 +4,7 @@ The official Node.js SDK for **Drip** - Usage-based billing for AI agents.
 
 Drip enables real-time, per-request billing using USDC on blockchain. Perfect for AI APIs, compute platforms, and any service with variable usage patterns.
 
-[![npm version](https://img.shields.io/npm/v/@drip-sdk%2Fnode.svg)](https://www.npmjs.com/package/@drip-sdk/node)
+[![npm version](https://badge.fury.io/js/@drip-sdk/node.svg)](https://www.npmjs.com/package/@drip-sdk/node)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
 ## Installation
@@ -215,6 +215,105 @@ if (status.status === 'CONFIRMED') {
 }
 ```
 
+### Streaming Meter
+
+For LLM token streaming and other high-frequency metering scenarios, use the streaming meter to accumulate usage locally and charge once at the end:
+
+```typescript
+import { Drip } from '@drip-sdk/node';
+
+const drip = new Drip({ apiKey: process.env.DRIP_API_KEY! });
+
+// Create a stream meter for a customer
+const meter = drip.createStreamMeter({
+  customerId: 'cust_abc123',
+  meter: 'tokens',
+});
+
+// Stream from your LLM provider
+const stream = await openai.chat.completions.create({
+  model: 'gpt-4',
+  messages: [{ role: 'user', content: 'Hello!' }],
+  stream: true,
+});
+
+// Accumulate tokens as they stream
+for await (const chunk of stream) {
+  const tokens = chunk.usage?.completion_tokens ?? 1;
+  meter.add(tokens); // Accumulates locally, no API call
+  yield chunk;
+}
+
+// Single charge at end of stream
+const result = await meter.flush();
+console.log(`Charged ${result.charge.amountUsdc} USDC for ${result.quantity} tokens`);
+```
+
+#### Stream Meter Options
+
+```typescript
+const meter = drip.createStreamMeter({
+  customerId: 'cust_abc123',
+  meter: 'tokens',
+
+  // Optional: Custom idempotency key
+  idempotencyKey: 'stream_req_123',
+
+  // Optional: Metadata attached to the charge
+  metadata: { model: 'gpt-4', endpoint: '/v1/chat' },
+
+  // Optional: Auto-flush when threshold reached
+  flushThreshold: 10000, // Flush every 10k tokens
+
+  // Optional: Callback on each add
+  onAdd: (quantity, total) => console.log(`Added ${quantity}, total: ${total}`),
+});
+```
+
+#### Handling Partial Failures
+
+If the stream fails mid-way, you can still charge for what was delivered:
+
+```typescript
+const meter = drip.createStreamMeter({
+  customerId: 'cust_abc123',
+  meter: 'tokens',
+});
+
+try {
+  for await (const chunk of stream) {
+    meter.add(chunk.tokens);
+    yield chunk;
+  }
+  await meter.flush();
+} catch (error) {
+  // Charge for tokens delivered before failure
+  if (meter.total > 0) {
+    await meter.flush();
+  }
+  throw error;
+}
+```
+
+#### Multiple Meters in One Request
+
+```typescript
+const tokenMeter = drip.createStreamMeter({ customerId, meter: 'tokens' });
+const toolMeter = drip.createStreamMeter({ customerId, meter: 'tool_calls' });
+
+for await (const chunk of agentStream) {
+  if (chunk.type === 'token') {
+    tokenMeter.add(1);
+  } else if (chunk.type === 'tool_call') {
+    toolMeter.add(1);
+  }
+  yield chunk;
+}
+
+// Flush all meters
+await Promise.all([tokenMeter.flush(), toolMeter.flush()]);
+```
+
 ### Run Tracking (Simplified API)
 
 Track agent executions with a single API call instead of multiple separate calls.
@@ -369,6 +468,8 @@ import {
   ChargeStatus,
   Webhook,
   WebhookEventType,
+  StreamMeter,
+  StreamMeterOptions,
 } from '@drip-sdk/node';
 
 // All types are available for use
@@ -583,9 +684,7 @@ export const POST = withDrip({ meter: 'api_calls', quantity: 1 }, handler);
 | Dev Mode Skip | ✅ | Skip in development |
 | Metadata | ✅ | Attach to charges |
 | TypeScript | ✅ | Full type definitions |
-| Fastify Adapter | ❌ | Coming soon |
-| Rate Limiting | ❌ | Planned |
-| Balance Caching | ❌ | Planned |
+| Streaming Meter | ✅ | For LLM token streams |
 
 ## Contributing
 

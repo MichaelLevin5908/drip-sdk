@@ -8,6 +8,8 @@
  * @packageDocumentation
  */
 
+import { StreamMeter, type StreamMeterOptions } from './stream-meter.js';
+
 // ============================================================================
 // Configuration Types
 // ============================================================================
@@ -838,7 +840,7 @@ export class DripError extends Error {
  *
  * @example
  * ```typescript
- * import { Drip } from '@drip-billing/sdk';
+ * import { Drip } from '@drip-sdk/node';
  *
  * const drip = new Drip({
  *   apiKey: process.env.DRIP_API_KEY!,
@@ -1815,19 +1817,20 @@ export class Drip {
   // ==========================================================================
 
   /**
-   * Verifies a webhook signature.
+   * Verifies a webhook signature using HMAC-SHA256.
    *
    * Call this when receiving webhook events to ensure they're authentic.
+   * This is an async method that uses the Web Crypto API for secure verification.
    *
    * @param payload - The raw request body (string)
    * @param signature - The x-drip-signature header value
    * @param secret - Your webhook secret
-   * @returns Whether the signature is valid
+   * @returns Promise resolving to whether the signature is valid
    *
    * @example
    * ```typescript
-   * app.post('/webhooks/drip', (req, res) => {
-   *   const isValid = Drip.verifyWebhookSignature(
+   * app.post('/webhooks/drip', async (req, res) => {
+   *   const isValid = await Drip.verifyWebhookSignature(
    *     req.rawBody,
    *     req.headers['x-drip-signature'],
    *     process.env.DRIP_WEBHOOK_SECRET!,
@@ -1841,28 +1844,175 @@ export class Drip {
    * });
    * ```
    */
-  static verifyWebhookSignature(
+  static async verifyWebhookSignature(
+    payload: string,
+    signature: string,
+    secret: string,
+  ): Promise<boolean> {
+    if (!payload || !signature || !secret) {
+      return false;
+    }
+
+    try {
+      const encoder = new TextEncoder();
+      const keyData = encoder.encode(secret);
+      const payloadData = encoder.encode(payload);
+
+      // Import the secret as an HMAC key
+      const cryptoKey = await crypto.subtle.importKey(
+        'raw',
+        keyData,
+        { name: 'HMAC', hash: 'SHA-256' },
+        false,
+        ['sign'],
+      );
+
+      // Sign the payload
+      const signatureBuffer = await crypto.subtle.sign(
+        'HMAC',
+        cryptoKey,
+        payloadData,
+      );
+
+      // Convert to hex string
+      const expectedSignature = Array.from(new Uint8Array(signatureBuffer))
+        .map((b) => b.toString(16).padStart(2, '0'))
+        .join('');
+
+      // Constant-time comparison to prevent timing attacks
+      if (signature.length !== expectedSignature.length) {
+        return false;
+      }
+
+      let result = 0;
+      for (let i = 0; i < signature.length; i++) {
+        result |= signature.charCodeAt(i) ^ expectedSignature.charCodeAt(i);
+      }
+
+      return result === 0;
+    } catch {
+      return false;
+    }
+  }
+
+  /**
+   * Synchronously verifies a webhook signature using HMAC-SHA256.
+   *
+   * This method uses Node.js crypto module and is only available in Node.js environments.
+   * For edge runtimes or browsers, use the async `verifyWebhookSignature` method instead.
+   *
+   * @param payload - The raw request body (string)
+   * @param signature - The x-drip-signature header value
+   * @param secret - Your webhook secret
+   * @returns Whether the signature is valid
+   *
+   * @example
+   * ```typescript
+   * app.post('/webhooks/drip', (req, res) => {
+   *   const isValid = Drip.verifyWebhookSignatureSync(
+   *     req.rawBody,
+   *     req.headers['x-drip-signature'],
+   *     process.env.DRIP_WEBHOOK_SECRET!,
+   *   );
+   *
+   *   if (!isValid) {
+   *     return res.status(401).send('Invalid signature');
+   *   }
+   *
+   *   // Process the webhook...
+   * });
+   * ```
+   */
+  static verifyWebhookSignatureSync(
     payload: string,
     signature: string,
     secret: string,
   ): boolean {
-    // Use Web Crypto API for HMAC verification
-    // This works in both Node.js 18+ and browsers
-    const encoder = new TextEncoder();
-    const data = encoder.encode(payload);
-    const key = encoder.encode(secret);
-
-    // For synchronous verification, we compute a simple hash comparison
-    // In production, you might want to use the async crypto.subtle API
-    let hash = 0;
-    for (let i = 0; i < data.length; i++) {
-      hash = ((hash << 5) - hash + data[i] + key[i % key.length]) | 0;
+    if (!payload || !signature || !secret) {
+      return false;
     }
 
-    const expectedSig = Math.abs(hash).toString(16);
-    return signature === expectedSig || signature.includes(expectedSig);
+    try {
+      // Dynamic import to avoid bundling issues in edge runtimes
+      // eslint-disable-next-line @typescript-eslint/no-require-imports
+      const crypto = require('crypto') as typeof import('crypto');
+
+      const expectedSignature = crypto
+        .createHmac('sha256', secret)
+        .update(payload)
+        .digest('hex');
+
+      // Use timingSafeEqual for constant-time comparison
+      const sigBuffer = Buffer.from(signature);
+      const expectedBuffer = Buffer.from(expectedSignature);
+
+      if (sigBuffer.length !== expectedBuffer.length) {
+        return false;
+      }
+
+      return crypto.timingSafeEqual(sigBuffer, expectedBuffer);
+    } catch {
+      return false;
+    }
+  }
+
+  // ==========================================================================
+  // StreamMeter Factory
+  // ==========================================================================
+
+  /**
+   * Creates a StreamMeter for accumulating usage and charging once.
+   *
+   * Perfect for LLM token streaming where you want to:
+   * - Accumulate tokens locally (no API call per token)
+   * - Charge once at the end of the stream
+   * - Handle partial failures (charge for what was delivered)
+   *
+   * @param options - StreamMeter configuration
+   * @returns A new StreamMeter instance
+   *
+   * @example
+   * ```typescript
+   * const meter = drip.createStreamMeter({
+   *   customerId: 'cust_abc123',
+   *   meter: 'tokens',
+   * });
+   *
+   * // Accumulate tokens as they stream
+   * for await (const chunk of llmStream) {
+   *   meter.addSync(chunk.tokens);
+   *   yield chunk;
+   * }
+   *
+   * // Single charge at end
+   * const result = await meter.flush();
+   * console.log(`Charged ${result.charge?.amountUsdc} for ${result.quantity} tokens`);
+   * ```
+   *
+   * @example
+   * ```typescript
+   * // With auto-flush threshold
+   * const meter = drip.createStreamMeter({
+   *   customerId: 'cust_abc123',
+   *   meter: 'tokens',
+   *   flushThreshold: 10000, // Charge every 10k tokens
+   * });
+   *
+   * for await (const chunk of longStream) {
+   *   await meter.add(chunk.tokens); // May auto-flush
+   * }
+   *
+   * await meter.flush(); // Final flush for remaining tokens
+   * ```
+   */
+  createStreamMeter(options: StreamMeterOptions): StreamMeter {
+    return new StreamMeter(this.charge.bind(this), options);
   }
 }
+
+// Re-export StreamMeter types
+export { StreamMeter } from './stream-meter.js';
+export type { StreamMeterOptions, StreamMeterFlushResult } from './stream-meter.js';
 
 // Default export for convenience
 export default Drip;
