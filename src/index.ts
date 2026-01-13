@@ -124,14 +124,20 @@ export interface BalanceResult {
   /** Customer ID */
   customerId: string;
 
-  /** Balance in USDC (6 decimals) */
-  balanceUSDC: string;
+  /** On-chain address */
+  onchainAddress: string;
 
-  /** Balance in native token */
-  balanceToken: string;
+  /** Balance in USDC (6 decimals) - matches backend field name */
+  balanceUsdc: string;
 
-  /** ISO timestamp of last balance update */
-  lastUpdated: string;
+  /** Pending charges in USDC */
+  pendingChargesUsdc: string;
+
+  /** Available USDC (balance minus pending) */
+  availableUsdc: string;
+
+  /** ISO timestamp of last balance sync */
+  lastSyncedAt: string | null;
 }
 
 // ============================================================================
@@ -946,6 +952,40 @@ export class Drip {
   }
 
   // ==========================================================================
+  // Health Check Methods
+  // ==========================================================================
+
+  /**
+   * Pings the Drip API to check connectivity and measure latency.
+   *
+   * @returns Health status with latency information
+   *
+   * @example
+   * ```typescript
+   * const health = await drip.ping();
+   * if (health.ok) {
+   *   console.log(`API healthy, latency: ${health.latencyMs}ms`);
+   * }
+   * ```
+   */
+  async ping(): Promise<{ ok: boolean; status: string; latencyMs: number; timestamp: number }> {
+    const start = Date.now();
+    const response = await fetch(`${this.baseUrl.replace('/v1', '')}/health`, {
+      headers: {
+        Authorization: `Bearer ${this.apiKey}`,
+      },
+    });
+    const latencyMs = Date.now() - start;
+    const data = await response.json() as { status: string; timestamp: number };
+    return {
+      ok: data.status === 'healthy',
+      status: data.status,
+      latencyMs,
+      timestamp: data.timestamp,
+    };
+  }
+
+  // ==========================================================================
   // Customer Methods
   // ==========================================================================
 
@@ -1552,7 +1592,7 @@ export class Drip {
     duplicates: number;
     events: Array<{ id: string; eventType: string; isDuplicate: boolean }>;
   }> {
-    return this.request('/events/batch', {
+    return this.request('/run-events/batch', {
       method: 'POST',
       body: JSON.stringify({ events }),
     });
