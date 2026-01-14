@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { StreamMeter, type StreamMeterOptions, type StreamMeterFlushResult } from '../stream-meter';
-import type { ChargeResult } from '../index';
+import { StreamMeter, type StreamMeterOptions, type StreamMeterFlushResult } from '../stream-meter.js';
+import type { ChargeResult } from '../index.js';
 
 describe('StreamMeter', () => {
   const mockChargeResult: ChargeResult = {
