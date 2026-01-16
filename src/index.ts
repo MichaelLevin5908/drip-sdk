@@ -222,6 +222,74 @@ export type ChargeStatus =
   | 'REFUNDED';
 
 /**
+ * Parameters for tracking usage without billing.
+ * Use this for internal visibility, pilots, or pre-billing tracking.
+ */
+export interface TrackUsageParams {
+  /**
+   * The Drip customer ID to track usage for.
+   * @example "cust_abc123"
+   */
+  customerId: string;
+
+  /**
+   * The meter/usage type (e.g., 'api_calls', 'tokens').
+   */
+  meter: string;
+
+  /**
+   * The quantity of usage to record.
+   */
+  quantity: number;
+
+  /**
+   * Unique key to prevent duplicate records.
+   */
+  idempotencyKey?: string;
+
+  /**
+   * Human-readable unit label (e.g., 'tokens', 'requests').
+   */
+  units?: string;
+
+  /**
+   * Human-readable description of this usage event.
+   */
+  description?: string;
+
+  /**
+   * Additional metadata to attach to this usage event.
+   */
+  metadata?: Record<string, unknown>;
+}
+
+/**
+ * Result of tracking usage (no billing).
+ */
+export interface TrackUsageResult {
+  /** Whether the usage was recorded */
+  success: boolean;
+
+  /** The usage event ID */
+  usageEventId: string;
+
+  /** Customer ID */
+  customerId: string;
+
+  /** Usage type that was recorded */
+  usageType: string;
+
+  /** Quantity recorded */
+  quantity: number;
+
+  /** Whether this customer is internal-only */
+  isInternal: boolean;
+
+  /** Confirmation message */
+  message: string;
+}
+
+/**
  * A detailed charge record.
  */
 export interface Charge {
@@ -1176,6 +1244,51 @@ export class Drip {
   }
 
   /**
+   * Records usage for internal visibility WITHOUT billing.
+   *
+   * Use this for:
+   * - Tracking internal team usage without charging
+   * - Pilot programs where you want visibility before billing
+   * - Pre-billing tracking before customer has on-chain wallet
+   *
+   * This does NOT:
+   * - Create a Charge record
+   * - Require customer balance
+   * - Require blockchain/wallet setup
+   *
+   * For billing, use `charge()` instead.
+   *
+   * @param params - The usage tracking parameters
+   * @returns The tracked usage event
+   *
+   * @example
+   * ```typescript
+   * const result = await drip.trackUsage({
+   *   customerId: 'cust_abc123',
+   *   meter: 'api_calls',
+   *   quantity: 100,
+   *   description: 'API calls during trial period',
+   * });
+   *
+   * console.log(`Tracked: ${result.usageEventId}`);
+   * ```
+   */
+  async trackUsage(params: TrackUsageParams): Promise<TrackUsageResult> {
+    return this.request<TrackUsageResult>('/usage/internal', {
+      method: 'POST',
+      body: JSON.stringify({
+        customerId: params.customerId,
+        usageType: params.meter,
+        quantity: params.quantity,
+        idempotencyKey: params.idempotencyKey,
+        units: params.units,
+        description: params.description,
+        metadata: params.metadata,
+      }),
+    });
+  }
+
+  /**
    * Retrieves a specific charge by ID.
    *
    * @param chargeId - The charge ID
@@ -1938,15 +2051,40 @@ export class Drip {
     payload: string,
     signature: string,
     secret: string,
+    tolerance = 300, // 5 minutes default
   ): Promise<boolean> {
     if (!payload || !signature || !secret) {
       return false;
     }
 
     try {
+      // Parse signature format: t=timestamp,v1=hexsignature
+      const parts = signature.split(',');
+      const timestampPart = parts.find((p) => p.startsWith('t='));
+      const signaturePart = parts.find((p) => p.startsWith('v1='));
+
+      if (!timestampPart || !signaturePart) {
+        return false;
+      }
+
+      const timestamp = parseInt(timestampPart.slice(2), 10);
+      const providedSignature = signaturePart.slice(3);
+
+      if (isNaN(timestamp)) {
+        return false;
+      }
+
+      // Check timestamp tolerance
+      const now = Math.floor(Date.now() / 1000);
+      if (Math.abs(now - timestamp) > tolerance) {
+        return false;
+      }
+
+      // Compute expected signature using timestamp.payload format
+      const signaturePayload = `${timestamp}.${payload}`;
       const encoder = new TextEncoder();
       const keyData = encoder.encode(secret);
-      const payloadData = encoder.encode(payload);
+      const payloadData = encoder.encode(signaturePayload);
 
       // Import the secret as an HMAC key
       const cryptoKey = await crypto.subtle.importKey(
@@ -1970,13 +2108,13 @@ export class Drip {
         .join('');
 
       // Constant-time comparison to prevent timing attacks
-      if (signature.length !== expectedSignature.length) {
+      if (providedSignature.length !== expectedSignature.length) {
         return false;
       }
 
       let result = 0;
-      for (let i = 0; i < signature.length; i++) {
-        result |= signature.charCodeAt(i) ^ expectedSignature.charCodeAt(i);
+      for (let i = 0; i < providedSignature.length; i++) {
+        result |= providedSignature.charCodeAt(i) ^ expectedSignature.charCodeAt(i);
       }
 
       return result === 0;
@@ -2017,23 +2155,48 @@ export class Drip {
     payload: string,
     signature: string,
     secret: string,
+    tolerance = 300, // 5 minutes default
   ): boolean {
     if (!payload || !signature || !secret) {
       return false;
     }
 
     try {
+      // Parse signature format: t=timestamp,v1=hexsignature
+      const parts = signature.split(',');
+      const timestampPart = parts.find((p) => p.startsWith('t='));
+      const signaturePart = parts.find((p) => p.startsWith('v1='));
+
+      if (!timestampPart || !signaturePart) {
+        return false;
+      }
+
+      const timestamp = parseInt(timestampPart.slice(2), 10);
+      const providedSignature = signaturePart.slice(3);
+
+      if (isNaN(timestamp)) {
+        return false;
+      }
+
+      // Check timestamp tolerance
+      const now = Math.floor(Date.now() / 1000);
+      if (Math.abs(now - timestamp) > tolerance) {
+        return false;
+      }
+
       // Dynamic import to avoid bundling issues in edge runtimes
       // eslint-disable-next-line @typescript-eslint/no-require-imports
       const crypto = require('crypto') as typeof import('crypto');
 
+      // Compute expected signature using timestamp.payload format
+      const signaturePayload = `${timestamp}.${payload}`;
       const expectedSignature = crypto
         .createHmac('sha256', secret)
-        .update(payload)
+        .update(signaturePayload)
         .digest('hex');
 
       // Use timingSafeEqual for constant-time comparison
-      const sigBuffer = Buffer.from(signature);
+      const sigBuffer = Buffer.from(providedSignature);
       const expectedBuffer = Buffer.from(expectedSignature);
 
       if (sigBuffer.length !== expectedBuffer.length) {
@@ -2044,6 +2207,45 @@ export class Drip {
     } catch {
       return false;
     }
+  }
+
+  /**
+   * Generates a webhook signature for testing purposes.
+   *
+   * This method creates a signature in the same format the Drip backend uses,
+   * allowing you to test your webhook handling code locally.
+   *
+   * @param payload - The webhook payload (JSON string)
+   * @param secret - The webhook secret
+   * @param timestamp - Optional timestamp (defaults to current time)
+   * @returns Signature in format: t=timestamp,v1=hexsignature
+   *
+   * @example
+   * ```typescript
+   * const payload = JSON.stringify({ type: 'charge.succeeded', data: {...} });
+   * const signature = Drip.generateWebhookSignature(payload, 'whsec_test123');
+   *
+   * // Use in tests:
+   * const isValid = Drip.verifyWebhookSignatureSync(payload, signature, 'whsec_test123');
+   * console.log(isValid); // true
+   * ```
+   */
+  static generateWebhookSignature(
+    payload: string,
+    secret: string,
+    timestamp?: number,
+  ): string {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const crypto = require('crypto') as typeof import('crypto');
+
+    const ts = timestamp ?? Math.floor(Date.now() / 1000);
+    const signaturePayload = `${ts}.${payload}`;
+    const signature = crypto
+      .createHmac('sha256', secret)
+      .update(signaturePayload)
+      .digest('hex');
+
+    return `t=${ts},v1=${signature}`;
   }
 
   // ==========================================================================
