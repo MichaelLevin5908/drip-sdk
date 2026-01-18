@@ -2086,8 +2086,13 @@ export class Drip {
       const keyData = encoder.encode(secret);
       const payloadData = encoder.encode(signaturePayload);
 
+      // Get the subtle crypto API - use globalThis.crypto for browsers/edge runtimes,
+      // or fall back to Node.js webcrypto for Node.js 18+
+      // eslint-disable-next-line @typescript-eslint/no-require-imports
+      const subtle = globalThis.crypto?.subtle ?? (require('crypto') as typeof import('crypto')).webcrypto.subtle;
+
       // Import the secret as an HMAC key
-      const cryptoKey = await crypto.subtle.importKey(
+      const cryptoKey = await subtle.importKey(
         'raw',
         keyData,
         { name: 'HMAC', hash: 'SHA-256' },
@@ -2096,7 +2101,7 @@ export class Drip {
       );
 
       // Sign the payload
-      const signatureBuffer = await crypto.subtle.sign(
+      const signatureBuffer = await subtle.sign(
         'HMAC',
         cryptoKey,
         payloadData,
