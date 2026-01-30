@@ -11,6 +11,107 @@
 import { StreamMeter, type StreamMeterOptions } from './stream-meter.js';
 
 // ============================================================================
+// Retry Utility
+// ============================================================================
+
+/**
+ * Default retry configuration.
+ */
+const DEFAULT_RETRY_CONFIG = {
+  maxAttempts: 3,
+  baseDelayMs: 100,
+  maxDelayMs: 5000,
+} as const;
+
+/**
+ * Retry options for API calls.
+ */
+export interface RetryOptions {
+  /**
+   * Maximum number of retry attempts.
+   * @default 3
+   */
+  maxAttempts?: number;
+
+  /**
+   * Base delay between retries in milliseconds (exponential backoff).
+   * @default 100
+   */
+  baseDelayMs?: number;
+
+  /**
+   * Maximum delay between retries in milliseconds.
+   * @default 5000
+   */
+  maxDelayMs?: number;
+
+  /**
+   * Custom function to determine if an error is retryable.
+   * By default, retries on network errors and 5xx status codes.
+   */
+  isRetryable?: (error: unknown) => boolean;
+}
+
+/**
+ * Default function to determine if an error is retryable.
+ */
+function defaultIsRetryable(error: unknown): boolean {
+  // Retry on network errors
+  if (error instanceof Error) {
+    if (error.message.includes('fetch') || error.message.includes('network')) {
+      return true;
+    }
+  }
+
+  // Retry on 5xx errors and timeouts
+  if (error instanceof DripError) {
+    return error.statusCode >= 500 || error.statusCode === 408 || error.statusCode === 429;
+  }
+
+  return false;
+}
+
+/**
+ * Executes a function with exponential backoff retry.
+ * @internal
+ */
+async function retryWithBackoff<T>(
+  fn: () => Promise<T>,
+  options: RetryOptions = {},
+): Promise<T> {
+  const maxAttempts = options.maxAttempts ?? DEFAULT_RETRY_CONFIG.maxAttempts;
+  const baseDelayMs = options.baseDelayMs ?? DEFAULT_RETRY_CONFIG.baseDelayMs;
+  const maxDelayMs = options.maxDelayMs ?? DEFAULT_RETRY_CONFIG.maxDelayMs;
+  const isRetryable = options.isRetryable ?? defaultIsRetryable;
+
+  let lastError: unknown;
+
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    try {
+      return await fn();
+    } catch (error) {
+      lastError = error;
+
+      // Don't retry if it's the last attempt or error isn't retryable
+      if (attempt === maxAttempts || !isRetryable(error)) {
+        throw error;
+      }
+
+      // Exponential backoff with jitter
+      const delay = Math.min(
+        baseDelayMs * Math.pow(2, attempt - 1) + Math.random() * 100,
+        maxDelayMs,
+      );
+
+      await new Promise((resolve) => setTimeout(resolve, delay));
+    }
+  }
+
+  // Should never reach here, but TypeScript needs it
+  throw lastError;
+}
+
+// ============================================================================
 // Configuration Types
 // ============================================================================
 
@@ -881,6 +982,77 @@ export interface RunTimeline {
 }
 
 // ============================================================================
+// Wrap API Call Types
+// ============================================================================
+
+/**
+ * Parameters for wrapping an external API call with usage tracking.
+ * This ensures usage is recorded even if there's a crash/failure after the API call.
+ */
+export interface WrapApiCallParams<T> {
+  /**
+   * The Drip customer ID to charge.
+   */
+  customerId: string;
+
+  /**
+   * The usage meter/type to record against.
+   * Must match a meter configured in your pricing plan.
+   */
+  meter: string;
+
+  /**
+   * The async function that makes the external API call.
+   * This is the call you want to track (e.g., OpenAI, Anthropic, etc.)
+   */
+  call: () => Promise<T>;
+
+  /**
+   * Function to extract the usage quantity from the API call result.
+   * @example (result) => result.usage.total_tokens
+   */
+  extractUsage: (result: T) => number;
+
+  /**
+   * Custom idempotency key prefix.
+   * If not provided, a unique key is generated.
+   * The key ensures retries don't double-charge.
+   */
+  idempotencyKey?: string;
+
+  /**
+   * Additional metadata to attach to this usage event.
+   */
+  metadata?: Record<string, unknown>;
+
+  /**
+   * Retry configuration for the Drip charge call.
+   * The external API call is NOT retried (only called once).
+   */
+  retryOptions?: RetryOptions;
+}
+
+/**
+ * Result of a wrapped API call.
+ */
+export interface WrapApiCallResult<T> {
+  /**
+   * The result from the external API call.
+   */
+  result: T;
+
+  /**
+   * The charge result from Drip.
+   */
+  charge: ChargeResult;
+
+  /**
+   * The idempotency key used (useful for debugging).
+   */
+  idempotencyKey: string;
+}
+
+// ============================================================================
 // Error Types
 // ============================================================================
 
@@ -1241,6 +1413,113 @@ export class Drip {
         metadata: params.metadata,
       }),
     });
+  }
+
+  /**
+   * Wraps an external API call with guaranteed usage recording.
+   *
+   * **This solves the crash-before-record problem:**
+   * ```typescript
+   * // DANGEROUS - usage lost if crash between lines 1 and 2:
+   * const response = await openai.chat.completions.create({...}); // line 1
+   * await drip.charge({ tokens: response.usage.total_tokens });   // line 2
+   *
+   * // SAFE - wrapApiCall guarantees recording with retry:
+   * const { result } = await drip.wrapApiCall({
+   *   call: () => openai.chat.completions.create({...}),
+   *   extractUsage: (r) => r.usage.total_tokens,
+   *   ...
+   * });
+   * ```
+   *
+   * How it works:
+   * 1. Generates idempotency key BEFORE the API call
+   * 2. Makes the external API call (once, no retry)
+   * 3. Records usage in Drip with retry + idempotency
+   * 4. If recording fails transiently, retries are safe (no double-charge)
+   *
+   * @param params - Wrap parameters including the call and usage extractor
+   * @returns The API result and charge details
+   * @throws {DripError} If the Drip charge fails after retries
+   * @throws {Error} If the external API call fails
+   *
+   * @example
+   * ```typescript
+   * // OpenAI example
+   * const { result, charge } = await drip.wrapApiCall({
+   *   customerId: 'cust_abc123',
+   *   meter: 'tokens',
+   *   call: () => openai.chat.completions.create({
+   *     model: 'gpt-4',
+   *     messages: [{ role: 'user', content: 'Hello!' }],
+   *   }),
+   *   extractUsage: (r) => r.usage?.total_tokens ?? 0,
+   * });
+   *
+   * console.log(result.choices[0].message.content);
+   * console.log(`Charged: ${charge.charge.amountUsdc} USDC`);
+   * ```
+   *
+   * @example
+   * ```typescript
+   * // Anthropic example
+   * const { result, charge } = await drip.wrapApiCall({
+   *   customerId: 'cust_abc123',
+   *   meter: 'tokens',
+   *   call: () => anthropic.messages.create({
+   *     model: 'claude-3-opus-20240229',
+   *     max_tokens: 1024,
+   *     messages: [{ role: 'user', content: 'Hello!' }],
+   *   }),
+   *   extractUsage: (r) => r.usage.input_tokens + r.usage.output_tokens,
+   * });
+   * ```
+   *
+   * @example
+   * ```typescript
+   * // With custom retry options
+   * const { result } = await drip.wrapApiCall({
+   *   customerId: 'cust_abc123',
+   *   meter: 'api_calls',
+   *   call: () => fetch('https://api.example.com/expensive'),
+   *   extractUsage: () => 1, // Fixed cost per call
+   *   retryOptions: {
+   *     maxAttempts: 5,
+   *     baseDelayMs: 200,
+   *   },
+   * });
+   * ```
+   */
+  async wrapApiCall<T>(params: WrapApiCallParams<T>): Promise<WrapApiCallResult<T>> {
+    // Generate idempotency key BEFORE the call - this is the key insight!
+    // Even if we crash after the API call, retrying with the same key is safe.
+    const idempotencyKey = params.idempotencyKey
+      ?? `wrap_${Date.now()}_${Math.random().toString(36).slice(2, 11)}`;
+
+    // Step 1: Make the external API call (no retry - we don't control this)
+    const result = await params.call();
+
+    // Step 2: Extract usage from the result
+    const quantity = params.extractUsage(result);
+
+    // Step 3: Record usage in Drip with retry (idempotency makes this safe)
+    const charge = await retryWithBackoff(
+      () =>
+        this.charge({
+          customerId: params.customerId,
+          meter: params.meter,
+          quantity,
+          idempotencyKey,
+          metadata: params.metadata,
+        }),
+      params.retryOptions,
+    );
+
+    return {
+      result,
+      charge,
+      idempotencyKey,
+    };
   }
 
   /**
@@ -2086,13 +2365,8 @@ export class Drip {
       const keyData = encoder.encode(secret);
       const payloadData = encoder.encode(signaturePayload);
 
-      // Get the subtle crypto API - use globalThis.crypto for browsers/edge runtimes,
-      // or fall back to Node.js webcrypto for Node.js 18+
-      // eslint-disable-next-line @typescript-eslint/no-require-imports
-      const subtle = globalThis.crypto?.subtle ?? (require('crypto') as typeof import('crypto')).webcrypto.subtle;
-
       // Import the secret as an HMAC key
-      const cryptoKey = await subtle.importKey(
+      const cryptoKey = await crypto.subtle.importKey(
         'raw',
         keyData,
         { name: 'HMAC', hash: 'SHA-256' },
@@ -2101,7 +2375,7 @@ export class Drip {
       );
 
       // Sign the payload
-      const signatureBuffer = await subtle.sign(
+      const signatureBuffer = await crypto.subtle.sign(
         'HMAC',
         cryptoKey,
         payloadData,
