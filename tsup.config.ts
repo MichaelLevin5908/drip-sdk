@@ -6,6 +6,7 @@ export default defineConfig({
     'src/next.ts',
     'src/express.ts',
     'src/middleware.ts',
+    'src/langchain.ts',
   ],
   format: ['esm', 'cjs'],
   dts: true,

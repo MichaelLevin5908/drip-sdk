@@ -1,28 +1,8 @@
-# Dependencies
 node_modules/
-
-# Build output
 dist/
-
-
-# Environment files
+*.log
+.DS_Store
 .env
 .env.local
-.env.*.local
-
-# IDE
-.idea/
-.vscode/
-*.swp
-*.swo
-
-# OS
-.DS_Store
-Thumbs.db
-
-# Test coverage
 coverage/
-
-# Logs
-*.log
-npm-debug.log*
+.nyc_output/

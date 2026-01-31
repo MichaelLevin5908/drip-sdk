@@ -1,6 +1,6 @@
 {
   "name": "@drip-sdk/node",
-  "version": "1.0.10",
+  "version": "1.0.2",
   "description": "Official Node.js SDK for Drip - Usage-based billing for AI agents",
   "author": "Drip Team",
   "license": "MIT",
@@ -51,6 +51,16 @@
         "types": "./dist/middleware.d.cts",
         "default": "./dist/middleware.cjs"
       }
+    },
+    "./langchain": {
+      "import": {
+        "types": "./dist/langchain.d.ts",
+        "default": "./dist/langchain.js"
+      },
+      "require": {
+        "types": "./dist/langchain.d.cts",
+        "default": "./dist/langchain.cjs"
+      }
     }
   },
   "files": [
@@ -77,6 +87,8 @@
     "agents",
     "llm",
     "openai",
+    "anthropic",
+    "langchain",
     "api",
     "sdk",
     "typescript",

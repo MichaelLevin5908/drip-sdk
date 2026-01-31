@@ -9,6 +9,15 @@
  */
 
 import { StreamMeter, type StreamMeterOptions } from './stream-meter.js';
+import {
+  ResilienceManager,
+  type ResilienceConfig,
+  type ResilienceHealth,
+  type MetricsSummary,
+  createDefaultResilienceConfig,
+  createDisabledResilienceConfig,
+  createHighThroughputResilienceConfig,
+} from './resilience.js';
 
 // ============================================================================
 // Retry Utility
@@ -137,6 +146,37 @@ export interface DripConfig {
    * @default 30000
    */
   timeout?: number;
+
+  /**
+   * Enable production resilience features (rate limiting, retry with backoff,
+   * circuit breaker, metrics).
+   *
+   * - `true`: Use default production settings (100 req/s, 3 retries)
+   * - `'high-throughput'`: Optimized for high throughput (1000 req/s, 2 retries)
+   * - `ResilienceConfig`: Custom configuration object
+   * - `undefined`/`false`: Disabled (default for backward compatibility)
+   *
+   * @example
+   * ```typescript
+   * // Enable with defaults
+   * const drip = new Drip({ apiKey: '...', resilience: true });
+   *
+   * // High throughput mode
+   * const drip = new Drip({ apiKey: '...', resilience: 'high-throughput' });
+   *
+   * // Custom config
+   * const drip = new Drip({
+   *   apiKey: '...',
+   *   resilience: {
+   *     rateLimiter: { requestsPerSecond: 500, burstSize: 1000, enabled: true },
+   *     retry: { maxRetries: 5, enabled: true },
+   *     circuitBreaker: { failureThreshold: 10, enabled: true },
+   *     collectMetrics: true,
+   *   },
+   * });
+   * ```
+   */
+  resilience?: boolean | 'high-throughput' | Partial<ResilienceConfig>;
 }
 
 // ============================================================================
@@ -848,6 +888,131 @@ export interface ListMetersResponse {
 }
 
 // ============================================================================
+// Cost Estimation Types
+// ============================================================================
+
+/**
+ * Custom pricing map for cost estimation.
+ * Maps usage type to unit price (e.g., { "api_call": "0.005", "token": "0.0001" })
+ */
+export type CustomPricing = Record<string, string>;
+
+/**
+ * Parameters for estimating costs from historical usage events.
+ */
+export interface EstimateFromUsageParams {
+  /** Filter to a specific customer (optional) */
+  customerId?: string;
+
+  /** Start of the period to estimate */
+  periodStart: Date | string;
+
+  /** End of the period to estimate */
+  periodEnd: Date | string;
+
+  /** Default price for usage types without pricing plans */
+  defaultUnitPrice?: string;
+
+  /** Include events that already have charges (default: true) */
+  includeChargedEvents?: boolean;
+
+  /** Filter to specific usage types */
+  usageTypes?: string[];
+
+  /** Custom pricing overrides (takes precedence over DB pricing) */
+  customPricing?: CustomPricing;
+}
+
+/**
+ * A usage item for hypothetical cost estimation.
+ */
+export interface HypotheticalUsageItem {
+  /** The usage type (e.g., "api_call", "token") */
+  usageType: string;
+
+  /** The quantity of usage */
+  quantity: number;
+
+  /** Override unit price for this specific item */
+  unitPriceOverride?: string;
+}
+
+/**
+ * Parameters for estimating costs from hypothetical usage.
+ */
+export interface EstimateFromHypotheticalParams {
+  /** List of usage items to estimate */
+  items: HypotheticalUsageItem[];
+
+  /** Default price for usage types without pricing plans */
+  defaultUnitPrice?: string;
+
+  /** Custom pricing overrides (takes precedence over DB pricing) */
+  customPricing?: CustomPricing;
+}
+
+/**
+ * A line item in the cost estimate.
+ */
+export interface CostEstimateLineItem {
+  /** The usage type */
+  usageType: string;
+
+  /** Total quantity */
+  quantity: string;
+
+  /** Unit price used */
+  unitPrice: string;
+
+  /** Estimated cost in USDC */
+  estimatedCostUsdc: string;
+
+  /** Number of events (for usage-based estimates) */
+  eventCount?: number;
+
+  /** Whether a pricing plan was found for this usage type */
+  hasPricingPlan: boolean;
+}
+
+/**
+ * Response from cost estimation.
+ */
+export interface CostEstimateResponse {
+  /** Business ID */
+  businessId: string;
+
+  /** Customer ID (if filtered) */
+  customerId?: string;
+
+  /** Period start (for usage-based estimates) */
+  periodStart?: string;
+
+  /** Period end (for usage-based estimates) */
+  periodEnd?: string;
+
+  /** Breakdown by usage type */
+  lineItems: CostEstimateLineItem[];
+
+  /** Subtotal in USDC */
+  subtotalUsdc: string;
+
+  /** Total estimated cost in USDC */
+  estimatedTotalUsdc: string;
+
+  /** Currency (always USDC) */
+  currency: 'USDC';
+
+  /** Indicates this is an estimate, not a charge */
+  isEstimate: true;
+
+  /** When the estimate was generated */
+  generatedAt: string;
+
+  /** Notes about the estimate (e.g., missing pricing plans, custom pricing applied) */
+  notes: string[];
+}
+
+// ============================================================================
 // Record Run Types (Simplified API)
 // ============================================================================
 
@@ -1112,6 +1277,7 @@ export class Drip {
   private readonly apiKey: string;
   private readonly baseUrl: string;
   private readonly timeout: number;
+  private readonly resilience: ResilienceManager | null;
 
   /**
    * Creates a new Drip SDK client.
@@ -1121,8 +1287,21 @@ export class Drip {
    *
    * @example
    * ```typescript
+   * // Basic usage
    * const drip = new Drip({
    *   apiKey: 'drip_live_abc123...',
+   * });
+   *
+   * // With production resilience (recommended)
+   * const drip = new Drip({
+   *   apiKey: 'drip_live_abc123...',
+   *   resilience: true,
+   * });
+   *
+   * // High throughput mode
+   * const drip = new Drip({
+   *   apiKey: 'drip_live_abc123...',
+   *   resilience: 'high-throughput',
    * });
    * ```
    */
@@ -1134,6 +1313,17 @@ export class Drip {
     this.apiKey = config.apiKey;
     this.baseUrl = config.baseUrl || 'https://api.drip.dev/v1';
     this.timeout = config.timeout || 30000;
+
+    // Setup resilience manager
+    if (config.resilience === true) {
+      this.resilience = new ResilienceManager(createDefaultResilienceConfig());
+    } else if (config.resilience === 'high-throughput') {
+      this.resilience = new ResilienceManager(createHighThroughputResilienceConfig());
+    } else if (config.resilience && typeof config.resilience === 'object') {
+      this.resilience = new ResilienceManager(config.resilience);
+    } else {
+      this.resilience = null;
+    }
   }
 
   /**
@@ -1141,6 +1331,29 @@ export class Drip {
    * @internal
    */
   private async request<T>(
+    path: string,
+    options: RequestInit = {},
+  ): Promise<T> {
+    // Extract method for metrics
+    const method = (options.method ?? 'GET').toUpperCase();
+
+    // Use resilience manager if enabled
+    if (this.resilience) {
+      return this.resilience.execute(
+        () => this.rawRequest<T>(path, options),
+        method,
+        path
+      );
+    }
+
+    return this.rawRequest<T>(path, options);
+  }
+
+  /**
+   * Execute the actual HTTP request (internal).
+   * @internal
+   */
+  private async rawRequest<T>(
     path: string,
     options: RequestInit = {},
   ): Promise<T> {
@@ -1273,6 +1486,55 @@ export class Drip {
     } finally {
       clearTimeout(timeoutId);
     }
+  }
+
+  // ==========================================================================
+  // Resilience Methods
+  // ==========================================================================
+
+  /**
+   * Get SDK metrics (requires resilience to be enabled).
+   *
+   * Returns aggregated metrics including success rates, latencies, and errors.
+   *
+   * @returns Metrics summary or null if resilience is not enabled
+   *
+   * @example
+   * ```typescript
+   * const drip = new Drip({ apiKey: '...', resilience: true });
+   * // ... make some requests ...
+   *
+   * const metrics = drip.getMetrics();
+   * if (metrics) {
+   *   console.log(`Success rate: ${metrics.successRate.toFixed(1)}%`);
+   *   console.log(`P95 latency: ${metrics.p95LatencyMs.toFixed(0)}ms`);
+   * }
+   * ```
+   */
+  getMetrics(): MetricsSummary | null {
+    return this.resilience?.getMetrics() ?? null;
+  }
+
+  /**
+   * Get SDK health status (requires resilience to be enabled).
+   *
+   * Returns health status including circuit breaker state and rate limiter status.
+   *
+   * @returns Health status or null if resilience is not enabled
+   *
+   * @example
+   * ```typescript
+   * const drip = new Drip({ apiKey: '...', resilience: true });
+   *
+   * const health = drip.getHealth();
+   * if (health) {
+   *   console.log(`Circuit: ${health.circuitBreaker.state}`);
+   *   console.log(`Available tokens: ${health.rateLimiter.availableTokens}`);
+   * }
+   * ```
+   */
+  getHealth(): ResilienceHealth | null {
+    return this.resilience?.getHealth() ?? null;
   }
 
   // ==========================================================================
@@ -2093,6 +2355,117 @@ export class Drip {
     };
   }
 
+  // ==========================================================================
+  // Cost Estimation Methods
+  // ==========================================================================
+
+  /**
+   * Estimates costs from historical usage events.
+   *
+   * Use this to preview what existing usage would cost before creating charges,
+   * or to run "what-if" scenarios with custom pricing.
+   *
+   * @param params - Parameters for the estimate
+   * @returns Cost estimate with line item breakdown
+   *
+   * @example
+   * ```typescript
+   * // Estimate costs for last month's usage
+   * const estimate = await drip.estimateFromUsage({
+   *   periodStart: new Date('2024-01-01'),
+   *   periodEnd: new Date('2024-01-31'),
+   * });
+   *
+   * console.log(`Estimated total: $${estimate.estimatedTotalUsdc}`);
+   * ```
+   *
+   * @example
+   * ```typescript
+   * // "What-if" scenario with custom pricing
+   * const estimate = await drip.estimateFromUsage({
+   *   periodStart: new Date('2024-01-01'),
+   *   periodEnd: new Date('2024-01-31'),
+   *   customPricing: {
+   *     'api_call': '0.005',  // What if we charged $0.005 per call?
+   *     'token': '0.0001',    // What if we charged $0.0001 per token?
+   *   },
+   * });
+   * ```
+   */
+  async estimateFromUsage(params: EstimateFromUsageParams): Promise<CostEstimateResponse> {
+    const periodStart = params.periodStart instanceof Date
+      ? params.periodStart.toISOString()
+      : params.periodStart;
+    const periodEnd = params.periodEnd instanceof Date
+      ? params.periodEnd.toISOString()
+      : params.periodEnd;
+
+    return this.request<CostEstimateResponse>('/dashboard/cost-estimate/from-usage', {
+      method: 'POST',
+      body: JSON.stringify({
+        customerId: params.customerId,
+        periodStart,
+        periodEnd,
+        defaultUnitPrice: params.defaultUnitPrice,
+        includeChargedEvents: params.includeChargedEvents,
+        usageTypes: params.usageTypes,
+        customPricing: params.customPricing,
+      }),
+    });
+  }
+
+  /**
+   * Estimates costs from hypothetical usage.
+   *
+   * Use this for "what-if" scenarios, budget planning, or to preview
+   * costs before usage occurs.
+   *
+   * @param params - Parameters for the estimate
+   * @returns Cost estimate with line item breakdown
+   *
+   * @example
+   * ```typescript
+   * // Estimate what 10,000 API calls and 1M tokens would cost
+   * const estimate = await drip.estimateFromHypothetical({
+   *   items: [
+   *     { usageType: 'api_call', quantity: 10000 },
+   *     { usageType: 'token', quantity: 1000000 },
+   *   ],
+   * });
+   *
+   * console.log(`Estimated total: $${estimate.estimatedTotalUsdc}`);
+   * for (const item of estimate.lineItems) {
+   *   console.log(`  ${item.usageType}: ${item.quantity} × $${item.unitPrice} = $${item.estimatedCostUsdc}`);
+   * }
+   * ```
+   *
+   * @example
+   * ```typescript
+   * // Compare different pricing scenarios
+   * const currentPricing = await drip.estimateFromHypothetical({
+   *   items: [{ usageType: 'api_call', quantity: 100000 }],
+   * });
+   *
+   * const newPricing = await drip.estimateFromHypothetical({
+   *   items: [{ usageType: 'api_call', quantity: 100000 }],
+   *   customPricing: { 'api_call': '0.0005' },  // 50% discount
+   * });
+   *
+   * console.log(`Current: $${currentPricing.estimatedTotalUsdc}`);
+   * console.log(`With 50% discount: $${newPricing.estimatedTotalUsdc}`);
+   * ```
+   */
+  async estimateFromHypothetical(params: EstimateFromHypotheticalParams): Promise<CostEstimateResponse> {
+    return this.request<CostEstimateResponse>('/dashboard/cost-estimate/hypothetical', {
+      method: 'POST',
+      body: JSON.stringify({
+        items: params.items,
+        defaultUnitPrice: params.defaultUnitPrice,
+        customPricing: params.customPricing,
+      }),
+    });
+  }
+
   /**
    * Records a complete agent run in a single call.
    *
@@ -2589,6 +2962,32 @@ export class Drip {
 // Re-export StreamMeter types
 export { StreamMeter } from './stream-meter.js';
 export type { StreamMeterOptions, StreamMeterFlushResult } from './stream-meter.js';
+
+// Re-export Resilience types and utilities
+export {
+  ResilienceManager,
+  RateLimiter,
+  CircuitBreaker,
+  MetricsCollector,
+  RetryExhaustedError,
+  CircuitBreakerOpenError,
+  createDefaultResilienceConfig,
+  createDisabledResilienceConfig,
+  createHighThroughputResilienceConfig,
+  calculateBackoff,
+  isRetryableError,
+} from './resilience.js';
+
+export type {
+  ResilienceConfig,
+  ResilienceHealth,
+  RateLimiterConfig,
+  RetryConfig,
+  CircuitBreakerConfig,
+  CircuitState,
+  RequestMetrics,
+  MetricsSummary,
+} from './resilience.js';
 
 // Default export for convenience
 export default Drip;
