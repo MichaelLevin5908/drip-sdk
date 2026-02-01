@@ -1,8 +1,8 @@
 # @drip-sdk/node
 
-The official Node.js SDK for **Drip** - Usage-based billing for AI agents.
+The official Node.js SDK for **Drip** - Usage tracking and cost attribution for metered infrastructure.
 
-Drip enables real-time, per-request billing using USDC on blockchain. Perfect for AI APIs, compute platforms, and any service with variable usage patterns.
+Drip is the system of record for usage. We capture high-frequency metering for RPC providers, API companies, and AI agents - with cost attribution, execution traces, and real-time analytics.
 
 [![npm version](https://badge.fury.io/js/@drip-sdk/node.svg)](https://www.npmjs.com/package/@drip-sdk/node)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
@@ -13,690 +13,386 @@ Drip enables real-time, per-request billing using USDC on blockchain. Perfect fo
 npm install @drip-sdk/node
 ```
 
-```bash
-yarn add @drip-sdk/node
-```
+## Core SDK (Recommended for Pilots)
 
-```bash
-pnpm add @drip-sdk/node
-```
+For most use cases, import the **Core SDK** - a simplified API focused on two concepts:
 
-## Quick Start
-
-### One-Liner Integration (Recommended)
-
-The fastest way to add billing to your API:
-
-#### Next.js App Router
+1. **Usage Tracking** - Record metered usage events
+2. **Execution Logging** - Log agent runs with detailed event traces
 
 ```typescript
-// app/api/generate/route.ts
-import { withDrip } from '@drip-sdk/node/next';
+import { Drip } from '@drip-sdk/node/core';
 
-export const POST = withDrip({
+const drip = new Drip({ apiKey: process.env.DRIP_API_KEY! });
+
+// Verify connection
+await drip.ping();
+```
+
+### Track Usage
+
+```typescript
+// Track any metered usage (no billing - just recording)
+await drip.trackUsage({
+  customerId: 'cus_123',
   meter: 'api_calls',
   quantity: 1,
-}, async (req, { charge, customerId }) => {
-  // Your handler - payment already verified!
-  console.log(`Charged ${charge.charge.amountUsdc} USDC to ${customerId}`);
-  return Response.json({ result: 'success' });
+  metadata: { endpoint: '/v1/generate', method: 'POST' },
 });
 ```
 
-#### Express
+### Record Agent Runs
 
 ```typescript
-import express from 'express';
-import { dripMiddleware } from '@drip-sdk/node/express';
-
-const app = express();
-
-app.use('/api/paid', dripMiddleware({
-  meter: 'api_calls',
-  quantity: 1,
-}));
-
-app.post('/api/paid/generate', (req, res) => {
-  console.log(`Charged: ${req.drip.charge.charge.amountUsdc} USDC`);
-  res.json({ success: true });
-});
-```
-
-### Manual Integration
-
-For more control, use the SDK directly:
-
-```typescript
-import { Drip } from '@drip-sdk/node';
-
-// Initialize the client
-const drip = new Drip({
-  apiKey: process.env.DRIP_API_KEY!,
+// Record a complete agent execution with one call
+const result = await drip.recordRun({
+  customerId: 'cus_123',
+  workflow: 'research-agent',
+  events: [
+    { eventType: 'llm.call', model: 'gpt-4', inputTokens: 500, outputTokens: 1200 },
+    { eventType: 'tool.call', name: 'web-search', duration: 1500 },
+    { eventType: 'llm.call', model: 'gpt-4', inputTokens: 200, outputTokens: 800 },
+  ],
+  status: 'COMPLETED',
 });
 
-// Create a customer
-const customer = await drip.createCustomer({
-  onchainAddress: '0x1234567890abcdef...',
-  externalCustomerId: 'user_123',
-});
-
-// Record usage and charge
-const result = await drip.charge({
-  customerId: customer.id,
-  meter: 'api_calls',
-  quantity: 100,
-});
-
-console.log(`Charged ${result.charge.amountUsdc} USDC`);
-console.log(`TX: ${result.charge.txHash}`);
+console.log(result.summary);
+// Output: "Research Agent: 3 events recorded (2.5s)"
 ```
 
-## Configuration
+### Core SDK Methods
 
-```typescript
-const drip = new Drip({
-  // Required: Your Drip API key
-  apiKey: 'drip_live_abc123...',
+| Method | Description |
+|--------|-------------|
+| `ping()` | Verify API connection |
+| `createCustomer(params)` | Create a customer |
+| `getCustomer(customerId)` | Get customer details |
+| `listCustomers(options)` | List all customers |
+| `trackUsage(params)` | Record metered usage |
+| `recordRun(params)` | Log complete agent run (simplified) |
+| `startRun(params)` | Start execution trace |
+| `emitEvent(params)` | Log event within run |
+| `emitEventsBatch(params)` | Batch log events |
+| `endRun(runId, params)` | Complete execution trace |
+| `getRunTimeline(runId)` | Get execution timeline |
 
-  // Optional: API base URL (for staging/development)
-  baseUrl: 'https://api.drip.dev/v1',
+---
 
-  // Optional: Request timeout in milliseconds (default: 30000)
-  timeout: 30000,
-});
-```
+## Full SDK
 
-## API Reference
-
-### Customer Management
-
-#### Create a Customer
-
-```typescript
-const customer = await drip.createCustomer({
-  onchainAddress: '0x1234567890abcdef...',
-  externalCustomerId: 'user_123', // Your internal user ID
-  metadata: { plan: 'pro' },
-});
-```
-
-#### Get a Customer
-
-```typescript
-const customer = await drip.getCustomer('cust_abc123');
-```
-
-#### List Customers
-
-```typescript
-// List all customers
-const { data: customers } = await drip.listCustomers();
-
-// With filters
-const { data: activeCustomers } = await drip.listCustomers({
-  status: 'ACTIVE',
-  limit: 50,
-});
-```
-
-#### Get Customer Balance
-
-```typescript
-const balance = await drip.getBalance('cust_abc123');
-console.log(`Balance: ${balance.balanceUSDC} USDC`);
-```
-
-### Meters (Usage Types)
-
-#### List Available Meters
-
-Discover what meter names are valid for charging. Meters are defined by your pricing plans.
-
-```typescript
-const { data: meters } = await drip.listMeters();
-
-console.log('Available meters:');
-for (const meter of meters) {
-  console.log(`  ${meter.meter}: $${meter.unitPriceUsd}/unit`);
-}
-// Output:
-//   api_calls: $0.001/unit
-//   tokens: $0.00001/unit
-//   compute_seconds: $0.01/unit
-```
-
-### Charging & Usage
-
-#### Record Usage and Charge
-
-```typescript
-const result = await drip.charge({
-  customerId: 'cust_abc123',
-  meter: 'api_calls',
-  quantity: 100,
-  idempotencyKey: 'req_unique_123', // Prevents duplicate charges
-  metadata: { endpoint: '/v1/chat' },
-});
-
-if (result.success) {
-  console.log(`Charge ID: ${result.charge.id}`);
-  console.log(`Amount: ${result.charge.amountUsdc} USDC`);
-  console.log(`TX Hash: ${result.charge.txHash}`);
-}
-```
-
-#### Get Charge Details
-
-```typescript
-const charge = await drip.getCharge('chg_abc123');
-console.log(`Status: ${charge.status}`);
-```
-
-#### List Charges
-
-```typescript
-// List all charges
-const { data: charges } = await drip.listCharges();
-
-// Filter by customer and status
-const { data: customerCharges } = await drip.listCharges({
-  customerId: 'cust_abc123',
-  status: 'CONFIRMED',
-  limit: 50,
-});
-```
-
-#### Check Charge Status
-
-```typescript
-const status = await drip.getChargeStatus('chg_abc123');
-if (status.status === 'CONFIRMED') {
-  console.log('Charge confirmed on-chain!');
-}
-```
-
-### Streaming Meter
-
-For LLM token streaming and other high-frequency metering scenarios, use the streaming meter to accumulate usage locally and charge once at the end:
+For billing, webhooks, and advanced features, use the full SDK:
 
 ```typescript
 import { Drip } from '@drip-sdk/node';
 
 const drip = new Drip({ apiKey: process.env.DRIP_API_KEY! });
 
-// Create a stream meter for a customer
-const meter = drip.createStreamMeter({
-  customerId: 'cust_abc123',
-  meter: 'tokens',
-});
-
-// Stream from your LLM provider
-const stream = await openai.chat.completions.create({
-  model: 'gpt-4',
-  messages: [{ role: 'user', content: 'Hello!' }],
-  stream: true,
-});
-
-// Accumulate tokens as they stream
-for await (const chunk of stream) {
-  const tokens = chunk.usage?.completion_tokens ?? 1;
-  meter.add(tokens); // Accumulates locally, no API call
-  yield chunk;
-}
-
-// Single charge at end of stream
-const result = await meter.flush();
-console.log(`Charged ${result.charge.amountUsdc} USDC for ${result.quantity} tokens`);
+// All Core SDK methods plus:
+// - charge(), getBalance(), getCharge(), listCharges()
+// - createWebhook(), listWebhooks(), deleteWebhook()
+// - estimateFromUsage(), estimateFromHypothetical()
+// - checkout(), and more
 ```
 
-#### Stream Meter Options
+## Quick Start (Full SDK)
+
+### Track Usage
 
 ```typescript
-const meter = drip.createStreamMeter({
-  customerId: 'cust_abc123',
-  meter: 'tokens',
+import { Drip } from '@drip-sdk/node';
 
-  // Optional: Custom idempotency key
-  idempotencyKey: 'stream_req_123',
+const drip = new Drip({ apiKey: process.env.DRIP_API_KEY! });
 
-  // Optional: Metadata attached to the charge
-  metadata: { model: 'gpt-4', endpoint: '/v1/chat' },
-
-  // Optional: Auto-flush when threshold reached
-  flushThreshold: 10000, // Flush every 10k tokens
-
-  // Optional: Callback on each add
-  onAdd: (quantity, total) => console.log(`Added ${quantity}, total: ${total}`),
-});
-```
-
-#### Handling Partial Failures
-
-If the stream fails mid-way, you can still charge for what was delivered:
-
-```typescript
-const meter = drip.createStreamMeter({
-  customerId: 'cust_abc123',
-  meter: 'tokens',
+// Track any metered usage
+await drip.trackUsage({
+  customerId: 'cus_123',
+  meter: 'api_calls',
+  quantity: 1,
+  metadata: { endpoint: '/v1/generate', method: 'POST' },
 });
 
-try {
-  for await (const chunk of stream) {
-    meter.add(chunk.tokens);
-    yield chunk;
-  }
-  await meter.flush();
-} catch (error) {
-  // Charge for tokens delivered before failure
-  if (meter.total > 0) {
-    await meter.flush();
-  }
-  throw error;
-}
+// Check accumulated usage
+const balance = await drip.getBalance('cus_123');
+console.log(`Total usage: $${balance.totalUsageUsd}`);
 ```
 
-#### Multiple Meters in One Request
+### Log Agent Runs (AI/Agent API)
 
 ```typescript
-const tokenMeter = drip.createStreamMeter({ customerId, meter: 'tokens' });
-const toolMeter = drip.createStreamMeter({ customerId, meter: 'tool_calls' });
-
-for await (const chunk of agentStream) {
-  if (chunk.type === 'token') {
-    tokenMeter.add(1);
-  } else if (chunk.type === 'tool_call') {
-    toolMeter.add(1);
-  }
-  yield chunk;
-}
-
-// Flush all meters
-await Promise.all([tokenMeter.flush(), toolMeter.flush()]);
-```
-
-### Run Tracking (Simplified API)
-
-Track agent executions with a single API call instead of multiple separate calls.
-
-#### Record a Complete Run
-
-The `recordRun()` method combines workflow creation, run tracking, event emission, and completion into one call:
-
-```typescript
-// Before: 4+ separate API calls
-const workflow = await drip.createWorkflow({ name: 'My Agent', slug: 'my_agent' });
-const run = await drip.startRun({ customerId, workflowId: workflow.id });
-await drip.emitEvent({ runId: run.id, eventType: 'step1', ... });
-await drip.emitEvent({ runId: run.id, eventType: 'step2', ... });
-await drip.endRun(run.id, { status: 'COMPLETED' });
-
-// After: 1 call with recordRun()
+// Record a complete agent execution with one call
 const result = await drip.recordRun({
-  customerId: 'cust_123',
-  workflow: 'my_agent',  // Auto-creates workflow if it doesn't exist
+  customerId: 'cus_123',
+  workflow: 'research-agent',
   events: [
-    { eventType: 'agent.start', description: 'Started processing' },
-    { eventType: 'tool.ocr', quantity: 3, units: 'pages', costUnits: 0.15 },
-    { eventType: 'tool.validate', quantity: 1, costUnits: 0.05 },
-    { eventType: 'agent.complete', description: 'Finished successfully' },
+    { eventType: 'llm.call', model: 'gpt-4', inputTokens: 500, outputTokens: 1200 },
+    { eventType: 'tool.call', name: 'web-search', duration: 1500 },
+    { eventType: 'llm.call', model: 'gpt-4', inputTokens: 200, outputTokens: 800 },
   ],
   status: 'COMPLETED',
 });
 
 console.log(result.summary);
-// Output: "✓ My Agent: 4 events recorded (250ms)"
+// Output: "Research Agent: 3 events recorded (2.5s)"
 ```
 
-#### Record a Failed Run
+### View Execution Traces
 
 ```typescript
-const result = await drip.recordRun({
-  customerId: 'cust_123',
-  workflow: 'prescription_intake',
-  events: [
-    { eventType: 'agent.start', description: 'Started processing' },
-    { eventType: 'error', description: 'OCR failed: image too blurry' },
-  ],
-  status: 'FAILED',
-  errorMessage: 'OCR processing failed',
-  errorCode: 'OCR_QUALITY_ERROR',
+// Get detailed timeline of an agent run
+const timeline = await drip.getRunTimeline(runId);
+
+for (const event of timeline.events) {
+  console.log(`${event.eventType}: ${event.duration}ms`);
+}
+```
+
+## Use Cases
+
+### RPC Providers
+
+```typescript
+// Track per-method usage with chain and latency
+await drip.trackUsage({
+  customerId: apiKeyOwner,
+  meter: 'rpc_calls',
+  quantity: 1,
+  metadata: {
+    method: 'eth_call',
+    chain: 'ethereum',
+    latencyMs: 45,
+    cacheHit: false,
+  },
+});
+```
+
+### API Companies
+
+```typescript
+// Track API usage with endpoint attribution
+await drip.trackUsage({
+  customerId: 'cus_123',
+  meter: 'api_calls',
+  quantity: 1,
+  metadata: {
+    endpoint: '/v1/embeddings',
+    tokens: 1500,
+    model: 'text-embedding-3-small',
+  },
+});
+```
+
+### AI Agents
+
+```typescript
+// Track agent execution with detailed events
+const run = await drip.startRun({
+  customerId: 'cus_123',
+  workflowSlug: 'document-processor',
 });
 
-console.log(result.summary);
-// Output: "✗ Prescription Intake: 2 events recorded (150ms)"
+await drip.emitEvent({
+  runId: run.id,
+  eventType: 'ocr.process',
+  quantity: 5,
+  units: 'pages',
+});
+
+await drip.emitEvent({
+  runId: run.id,
+  eventType: 'llm.summarize',
+  model: 'gpt-4',
+  inputTokens: 10000,
+  outputTokens: 500,
+});
+
+await drip.endRun(run.id, { status: 'COMPLETED' });
 ```
+
+## Full SDK API Reference
+
+### Usage & Billing
+
+| Method | Description |
+|--------|-------------|
+| `trackUsage(params)` | Record metered usage (no billing) |
+| `charge(params)` | Create a billable charge |
+| `getBalance(customerId)` | Get balance and usage summary |
+| `getCharge(chargeId)` | Get charge details |
+| `listCharges(options)` | List all charges |
+| `getChargeStatus(chargeId)` | Get charge status |
+
+### Execution Logging
+
+| Method | Description |
+|--------|-------------|
+| `recordRun(params)` | Log complete agent run (simplified) |
+| `startRun(params)` | Start execution trace |
+| `emitEvent(params)` | Log event within run |
+| `emitEventsBatch(params)` | Batch log events |
+| `endRun(runId, params)` | Complete execution trace |
+| `getRunTimeline(runId)` | Get execution timeline |
+| `createWorkflow(params)` | Create a workflow |
+| `listWorkflows()` | List all workflows |
+
+### Customer Management
+
+| Method | Description |
+|--------|-------------|
+| `createCustomer(params)` | Create a customer |
+| `getCustomer(customerId)` | Get customer details |
+| `listCustomers(options)` | List all customers |
 
 ### Webhooks
 
-#### Create a Webhook
+| Method | Description |
+|--------|-------------|
+| `createWebhook(params)` | Create webhook endpoint |
+| `listWebhooks()` | List all webhooks |
+| `getWebhook(webhookId)` | Get webhook details |
+| `deleteWebhook(webhookId)` | Delete a webhook |
+| `testWebhook(webhookId)` | Test a webhook |
+| `rotateWebhookSecret(webhookId)` | Rotate webhook secret |
+| `Drip.verifyWebhookSignature()` | Verify webhook signature |
+
+### Cost Estimation
+
+| Method | Description |
+|--------|-------------|
+| `estimateFromUsage(params)` | Estimate cost from usage data |
+| `estimateFromHypothetical(params)` | Estimate from hypothetical usage |
+
+### Other
+
+| Method | Description |
+|--------|-------------|
+| `checkout(params)` | Create checkout session (fiat on-ramp) |
+| `listMeters()` | List available meters |
+| `ping()` | Verify API connection |
+
+## Streaming Meter (LLM Token Streaming)
+
+For LLM token streaming, accumulate usage locally and charge once:
 
 ```typescript
-const webhook = await drip.createWebhook({
-  url: 'https://api.yourapp.com/webhooks/drip',
-  events: ['charge.succeeded', 'charge.failed', 'customer.balance.low'],
-  description: 'Main webhook endpoint',
+const meter = drip.createStreamMeter({
+  customerId: 'cus_123',
+  meter: 'tokens',
 });
 
-// IMPORTANT: Save the secret securely!
-console.log(`Webhook secret: ${webhook.secret}`);
+for await (const chunk of llmStream) {
+  meter.add(chunk.tokens);
+  yield chunk;
+}
+
+// Single API call at end
+await meter.flush();
 ```
 
-#### List Webhooks
+## Framework Middleware
+
+### Next.js
 
 ```typescript
-const { data: webhooks } = await drip.listWebhooks();
-webhooks.forEach((wh) => {
-  console.log(`${wh.url}: ${wh.stats?.successfulDeliveries} successful`);
-});
-```
+import { withDrip } from '@drip-sdk/node/next';
 
-#### Delete a Webhook
-
-```typescript
-await drip.deleteWebhook('wh_abc123');
-```
-
-#### Verify Webhook Signatures
-
-```typescript
-import express from 'express';
-import { Drip } from '@drip-sdk/node';
-
-const app = express();
-
-app.post(
-  '/webhooks/drip',
-  express.raw({ type: 'application/json' }),
-  (req, res) => {
-    const isValid = Drip.verifyWebhookSignature(
-      req.body.toString(),
-      req.headers['x-drip-signature'] as string,
-      process.env.DRIP_WEBHOOK_SECRET!,
-    );
-
-    if (!isValid) {
-      return res.status(401).send('Invalid signature');
-    }
-
-    const event = JSON.parse(req.body.toString());
-
-    switch (event.type) {
-      case 'charge.succeeded':
-        console.log('Charge succeeded:', event.data.charge_id);
-        break;
-      case 'charge.failed':
-        console.log('Charge failed:', event.data.failure_reason);
-        break;
-      case 'customer.balance.low':
-        console.log('Low balance alert for:', event.data.customer_id);
-        break;
-    }
-
-    res.status(200).send('OK');
-  },
-);
-```
-
-### Available Webhook Events
-
-| Event                        | Description                          |
-| ---------------------------- | ------------------------------------ |
-| `charge.succeeded`           | Charge confirmed on-chain            |
-| `charge.failed`              | Charge failed                        |
-| `customer.balance.low`       | Customer balance below threshold     |
-| `customer.deposit.confirmed` | Deposit confirmed on-chain           |
-| `customer.withdraw.confirmed`| Withdrawal confirmed                 |
-| `customer.usage_cap.reached` | Usage cap hit                        |
-| `customer.created`           | New customer created                 |
-| `usage.recorded`             | Usage event recorded                 |
-| `transaction.created`        | Transaction initiated                |
-| `transaction.confirmed`      | Transaction confirmed on-chain       |
-| `transaction.failed`         | Transaction failed                   |
-
-## TypeScript Usage
-
-The SDK is written in TypeScript and includes full type definitions.
-
-```typescript
-import {
-  Drip,
-  DripConfig,
-  DripError,
-  Customer,
-  Charge,
-  ChargeResult,
-  ChargeStatus,
-  Webhook,
-  WebhookEventType,
-  StreamMeter,
-  StreamMeterOptions,
-} from '@drip-sdk/node';
-
-// All types are available for use
-const config: DripConfig = {
-  apiKey: process.env.DRIP_API_KEY!,
-};
-
-const drip = new Drip(config);
-
-// Type-safe responses
-const customer: Customer = await drip.getCustomer('cust_abc123');
-const result: ChargeResult = await drip.charge({
-  customerId: customer.id,
+export const POST = withDrip({
   meter: 'api_calls',
-  quantity: 100,
+  quantity: 1,
+}, async (req, { customerId }) => {
+  return Response.json({ result: 'success' });
 });
+```
+
+### Express
+
+```typescript
+import { dripMiddleware } from '@drip-sdk/node/express';
+
+app.use('/api', dripMiddleware({
+  meter: 'api_calls',
+  quantity: 1,
+}));
+```
+
+## LangChain Integration
+
+```typescript
+import { DripCallbackHandler } from '@drip-sdk/node/langchain';
+
+const handler = new DripCallbackHandler({
+  drip,
+  customerId: 'cus_123',
+});
+
+// Automatically tracks all LLM calls and tool usage
+await agent.invoke({ input: '...' }, { callbacks: [handler] });
 ```
 
 ## Error Handling
-
-The SDK throws `DripError` for API errors:
 
 ```typescript
 import { Drip, DripError } from '@drip-sdk/node';
 
 try {
-  const result = await drip.charge({
-    customerId: 'cust_abc123',
-    meter: 'api_calls',
-    quantity: 100,
-  });
+  await drip.trackUsage({ ... });
 } catch (error) {
   if (error instanceof DripError) {
-    console.error(`API Error: ${error.message}`);
-    console.error(`Status Code: ${error.statusCode}`);
-    console.error(`Error Code: ${error.code}`);
-
-    switch (error.code) {
-      case 'INSUFFICIENT_BALANCE':
-        // Handle low balance
-        break;
-      case 'CUSTOMER_NOT_FOUND':
-        // Handle missing customer
-        break;
-      case 'RATE_LIMITED':
-        // Handle rate limiting
-        break;
-    }
+    console.error(`Error: ${error.message} (${error.code})`);
   }
 }
 ```
 
-### Common Error Codes
-
-| Code                   | Description                              |
-| ---------------------- | ---------------------------------------- |
-| `INSUFFICIENT_BALANCE` | Customer doesn't have enough balance     |
-| `CUSTOMER_NOT_FOUND`   | Customer ID doesn't exist                |
-| `DUPLICATE_CUSTOMER`   | Customer already exists                  |
-| `INVALID_API_KEY`      | API key is invalid or revoked            |
-| `RATE_LIMITED`         | Too many requests                        |
-| `TIMEOUT`              | Request timed out                        |
-
-## Idempotency
-
-Use idempotency keys to safely retry requests:
+## Billing (Full SDK Only)
 
 ```typescript
-const result = await drip.charge({
-  customerId: 'cust_abc123',
-  meter: 'api_calls',
-  quantity: 100,
-  idempotencyKey: `req_${requestId}`, // Unique per request
-});
-
-// Retrying with the same key returns the original result
-const retry = await drip.charge({
-  customerId: 'cust_abc123',
-  meter: 'api_calls',
-  quantity: 100,
-  idempotencyKey: `req_${requestId}`, // Same key = same result
-});
-```
-
-## CommonJS Usage
-
-The SDK supports both ESM and CommonJS:
-
-```javascript
-// ESM
 import { Drip } from '@drip-sdk/node';
 
-// CommonJS
-const { Drip } = require('@drip-sdk/node');
+const drip = new Drip({ apiKey: process.env.DRIP_API_KEY! });
+
+// Create a billable charge
+const result = await drip.charge({
+  customerId: 'cus_123',
+  meter: 'api_calls',
+  quantity: 1,
+});
+
+// Get customer balance
+const balance = await drip.getBalance('cus_123');
+console.log(`Balance: $${balance.balanceUsdc}`);
+
+// Query charges
+const charge = await drip.getCharge(chargeId);
+const charges = await drip.listCharges({ customerId: 'cus_123' });
+
+// Cost estimation
+await drip.estimateFromUsage({ customerId, startDate, endDate });
+await drip.estimateFromHypothetical({ items: [...] });
+
+// Checkout (fiat on-ramp)
+await drip.checkout({ customerId: 'cus_123', amountUsd: 5000 });
+```
+
+## TypeScript Support
+
+Full TypeScript support with exported types:
+
+```typescript
+import type {
+  Customer,
+  Charge,
+  ChargeResult,
+  TrackUsageParams,
+  RunResult,
+  Webhook,
+} from '@drip-sdk/node';
 ```
 
 ## Requirements
 
 - Node.js 18.0.0 or higher
-- Native `fetch` support (included in Node.js 18+)
-
-## Middleware Reference (withDrip)
-
-### Configuration Options
-
-| Option | Type | Default | Description |
-|--------|------|---------|-------------|
-| `meter` | `string` | **required** | Usage meter to charge (must match pricing plan) |
-| `quantity` | `number \| (req) => number` | **required** | Quantity to charge (static or dynamic) |
-| `apiKey` | `string` | `DRIP_API_KEY` | Drip API key |
-| `baseUrl` | `string` | `DRIP_API_URL` | Drip API base URL |
-| `customerResolver` | `'header' \| 'query' \| function` | `'header'` | How to identify customers |
-| `skipInDevelopment` | `boolean` | `false` | Skip charging in dev mode |
-| `metadata` | `object \| function` | `undefined` | Custom metadata for charges |
-| `onCharge` | `function` | `undefined` | Callback after successful charge |
-| `onError` | `function` | `undefined` | Custom error handler |
-
-### How It Works
-
-```
-┌─────────────────┐    ┌──────────────────┐    ┌─────────────────┐
-│   Your API      │    │   withDrip       │    │   Drip Backend  │
-│   (Next/Express)│───▶│   Middleware     │───▶│   API           │
-└─────────────────┘    └──────────────────┘    └─────────────────┘
-         │                      │                       │
-         ▼                      ▼                       ▼
-    1. Request            2. Resolve             3. Check balance
-       arrives               customer               & charge
-         │                      │                       │
-         ▼                      ▼                       ▼
-    6. Response           5. Pass to             4. Return result
-       returned              handler                or 402
-```
-
-### x402 Payment Flow
-
-When a customer has insufficient balance, the middleware returns `402 Payment Required`:
-
-```
-HTTP/1.1 402 Payment Required
-X-Payment-Required: true
-X-Payment-Amount: 0.01
-X-Payment-Recipient: 0x...
-X-Payment-Usage-Id: 0x...
-X-Payment-Expires: 1704110400
-X-Payment-Nonce: abc123
-
-{
-  "error": "Payment required",
-  "code": "PAYMENT_REQUIRED",
-  "paymentRequest": { ... },
-  "instructions": {
-    "step1": "Sign the payment request with your session key using EIP-712",
-    "step2": "Retry the request with X-Payment-* headers"
-  }
-}
-```
-
-### Advanced Usage
-
-#### Dynamic Quantity
-
-```typescript
-export const POST = withDrip({
-  meter: 'tokens',
-  quantity: async (req) => {
-    const body = await req.json();
-    return body.maxTokens ?? 100;
-  },
-}, handler);
-```
-
-#### Custom Customer Resolution
-
-```typescript
-export const POST = withDrip({
-  meter: 'api_calls',
-  quantity: 1,
-  customerResolver: (req) => {
-    const token = req.headers.get('authorization')?.split(' ')[1];
-    return decodeJWT(token).customerId;
-  },
-}, handler);
-```
-
-#### Factory Pattern
-
-```typescript
-// lib/drip.ts
-import { createWithDrip } from '@drip-sdk/node/next';
-
-export const withDrip = createWithDrip({
-  apiKey: process.env.DRIP_API_KEY,
-  baseUrl: process.env.DRIP_API_URL,
-});
-
-// app/api/generate/route.ts
-import { withDrip } from '@/lib/drip';
-export const POST = withDrip({ meter: 'api_calls', quantity: 1 }, handler);
-```
-
-### What's Included vs. Missing
-
-| Feature | Status | Description |
-|---------|--------|-------------|
-| Next.js App Router | ✅ | `withDrip` wrapper |
-| Express Middleware | ✅ | `dripMiddleware` |
-| x402 Payment Flow | ✅ | Automatic 402 handling |
-| Dynamic Quantity | ✅ | Function-based pricing |
-| Customer Resolution | ✅ | Header, query, or custom |
-| Idempotency | ✅ | Built-in or custom keys |
-| Dev Mode Skip | ✅ | Skip in development |
-| Metadata | ✅ | Attach to charges |
-| TypeScript | ✅ | Full type definitions |
-| Streaming Meter | ✅ | For LLM token streams |
-
-## Contributing
-
-Contributions are welcome! Please see [CONTRIBUTING.md](./CONTRIBUTING.md) for guidelines.
-
-## License
-
-MIT - see [LICENSE](./LICENSE)
 
 ## Links
 
-- [GitHub Repository](https://github.com/MichaelLevin5908/drip-sdk)
-- [Issue Tracker](https://github.com/MichaelLevin5908/drip-sdk/issues)
-- [npm Package](https://www.npmjs.com/package/@drip-sdk/node)
-- [Documentation](https://docs.drip.dev)
+- [Documentation](https://docs.drippay.dev)
+- [GitHub](https://github.com/MichaelLevin5908/drip)
+- [npm](https://www.npmjs.com/package/@drip-sdk/node)

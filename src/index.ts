@@ -212,8 +212,8 @@ export interface Customer {
   /** Unique customer ID in Drip */
   id: string;
 
-  /** Your business ID */
-  businessId: string;
+  /** Your business ID (optional - may not be returned by all endpoints) */
+  businessId?: string;
 
   /** Your external customer ID (if provided) */
   externalCustomerId: string | null;
@@ -978,8 +978,8 @@ export interface CostEstimateLineItem {
  * Response from cost estimation.
  */
 export interface CostEstimateResponse {
-  /** Business ID */
-  businessId: string;
+  /** Business ID (optional - may not be returned by all endpoints) */
+  businessId?: string;
 
   /** Customer ID (if filtered) */
   customerId?: string;
