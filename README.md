@@ -4,7 +4,7 @@ The official Node.js SDK for **Drip** - Usage tracking and cost attribution for 
 
 Drip is the system of record for usage. We capture high-frequency metering for RPC providers, API companies, and AI agents - with cost attribution, execution traces, and real-time analytics.
 
-[![npm version](https://badge.fury.io/js/@drip-sdk/node.svg)](https://www.npmjs.com/package/@drip-sdk/node)
+[![npm version](https://img.shields.io/npm/v/%40drip-sdk%2Fnode.svg)](https://www.npmjs.com/package/@drip-sdk/node)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
 ## Installation
