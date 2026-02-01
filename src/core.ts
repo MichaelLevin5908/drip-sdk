@@ -471,7 +471,7 @@ interface Workflow {
 interface CreateWorkflowParams {
   name: string;
   slug: string;
-  productSurface?: 'RPC' | 'WEBHOOK' | 'AGENT' | 'PIPELINE' | 'CUSTOM';
+  productSurface?: 'API' | 'RPC' | 'WEBHOOK' | 'AGENT' | 'PIPELINE' | 'CUSTOM';
   description?: string;
   metadata?: Record<string, unknown>;
 }
@@ -910,7 +910,7 @@ export class Drip {
    * ```
    */
   async emitEvent(params: EmitEventParams): Promise<EventResult> {
-    return this.request<EventResult>('/events', {
+    return this.request<EventResult>('/run-events', {
       method: 'POST',
       body: JSON.stringify(params),
     });
