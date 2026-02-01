@@ -33,11 +33,14 @@ jobs:
       - name: Install dependencies
         run: pnpm install
 
+      - name: Type check
+        run: pnpm typecheck
+
       - name: Build
         run: pnpm build
 
-      - name: Run tests
-        run: pnpm test
+      # Tests are run in the monorepo before sync, not here
+      # This allows publishing without test files in the public repo
 
       - name: Publish to npm
         run: npm publish --provenance --access public
