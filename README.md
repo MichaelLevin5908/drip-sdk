@@ -4,6 +4,8 @@ Drip is a lightweight SDK for **usage tracking and execution logging** in system
 
 This **Core SDK** is designed for pilots: it records *what ran* and *how much it used*, without handling billing or balances.
 
+**One line to start tracking:** `await drip.trackUsage({ customerId, meter, quantity })`
+
 [![npm version](https://img.shields.io/npm/v/%40drip-sdk%2Fnode.svg)](https://www.npmjs.com/package/@drip-sdk/node)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
