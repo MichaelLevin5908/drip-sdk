@@ -23,12 +23,33 @@ npm install @drip-sdk/node
 export DRIP_API_KEY=sk_test_...
 ```
 
-### 3. Track usage + execution
+### 3. Track usage (one line)
 
 ```typescript
-import { Drip } from '@drip-sdk/node/core';
+import { drip } from '@drip-sdk/node';
 
-const drip = new Drip({ apiKey: process.env.DRIP_API_KEY! });
+// Track usage - that's it
+await drip.trackUsage({ customerId: 'cust_123', meter: 'api_calls', quantity: 1 });
+```
+
+The `drip` singleton reads `DRIP_API_KEY` from your environment automatically.
+
+### Alternative: Explicit Configuration
+
+```typescript
+import { Drip } from '@drip-sdk/node';
+
+// Auto-reads DRIP_API_KEY from environment
+const drip = new Drip();
+
+// Or pass config explicitly
+const drip = new Drip({ apiKey: 'sk_test_...' });
+```
+
+### Full Example
+
+```typescript
+import { drip } from '@drip-sdk/node';
 
 async function main() {
   // Verify connectivity

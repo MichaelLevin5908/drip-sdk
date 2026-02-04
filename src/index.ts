@@ -126,17 +126,22 @@ async function retryWithBackoff<T>(
 
 /**
  * Configuration options for the Drip SDK client.
+ *
+ * All fields are optional - the SDK will read from environment variables:
+ * - `DRIP_API_KEY` - Your Drip API key
+ * - `DRIP_BASE_URL` - Override API base URL (optional)
  */
 export interface DripConfig {
   /**
    * Your Drip API key. Obtain this from the Drip dashboard.
+   * Falls back to `DRIP_API_KEY` environment variable if not provided.
    * @example "drip_live_abc123..."
    */
-  apiKey: string;
+  apiKey?: string;
 
   /**
    * Base URL for the Drip API. Defaults to production API.
-   * Override for staging/development environments.
+   * Falls back to `DRIP_BASE_URL` environment variable if not provided.
    * @default "https://api.drip.dev/v1"
    */
   baseUrl?: string;
@@ -1305,13 +1310,19 @@ export class Drip {
    * });
    * ```
    */
-  constructor(config: DripConfig) {
-    if (!config.apiKey) {
-      throw new Error('Drip API key is required');
+  constructor(config: DripConfig = {}) {
+    // Read from config or fall back to environment variables
+    const apiKey = config.apiKey ?? (typeof process !== 'undefined' ? process.env.DRIP_API_KEY : undefined);
+    const baseUrl = config.baseUrl ?? (typeof process !== 'undefined' ? process.env.DRIP_BASE_URL : undefined);
+
+    if (!apiKey) {
+      throw new Error(
+        'Drip API key is required. Either pass { apiKey } to constructor or set DRIP_API_KEY environment variable.'
+      );
     }
 
-    this.apiKey = config.apiKey;
-    this.baseUrl = config.baseUrl || 'https://api.drip.dev/v1';
+    this.apiKey = apiKey;
+    this.baseUrl = baseUrl || 'https://api.drip.dev/v1';
     this.timeout = config.timeout || 30000;
 
     // Setup resilience manager
@@ -2991,3 +3002,72 @@ export type {
 
 // Default export for convenience
 export default Drip;
+
+// ============================================================================
+// Pre-initialized Singleton
+// ============================================================================
+
+/**
+ * Pre-initialized Drip client singleton.
+ *
+ * Reads configuration from environment variables:
+ * - `DRIP_API_KEY` (required)
+ * - `DRIP_BASE_URL` (optional)
+ *
+ * @example
+ * ```typescript
+ * import { drip } from '@drip-sdk/node';
+ *
+ * // One line to track usage
+ * await drip.trackUsage({ customerId: 'cust_123', meter: 'api_calls', quantity: 1 });
+ *
+ * // One line to charge
+ * await drip.charge({ customerId: 'cust_123', meter: 'api_calls', quantity: 1 });
+ * ```
+ *
+ * @throws {Error} on first use if DRIP_API_KEY is not set
+ */
+let _singleton: Drip | null = null;
+
+function getSingleton(): Drip {
+  if (!_singleton) {
+    _singleton = new Drip();
+  }
+  return _singleton;
+}
+
+/**
+ * Pre-initialized Drip client singleton.
+ *
+ * Uses lazy initialization - only creates the client when first accessed.
+ * Reads `DRIP_API_KEY` from environment variables.
+ *
+ * @example
+ * ```typescript
+ * import { drip } from '@drip-sdk/node';
+ *
+ * // Track usage with one line
+ * await drip.trackUsage({ customerId: 'cust_123', meter: 'api_calls', quantity: 1 });
+ *
+ * // Charge with one line
+ * await drip.charge({ customerId: 'cust_123', meter: 'api_calls', quantity: 1 });
+ *
+ * // Record a run
+ * await drip.recordRun({
+ *   customerId: 'cust_123',
+ *   workflow: 'agent-run',
+ *   events: [{ eventType: 'llm.call', quantity: 1000, units: 'tokens' }],
+ *   status: 'COMPLETED',
+ * });
+ * ```
+ */
+export const drip: Drip = new Proxy({} as Drip, {
+  get(_target, prop) {
+    const instance = getSingleton();
+    const value = instance[prop as keyof Drip];
+    if (typeof value === 'function') {
+      return value.bind(instance);
+    }
+    return value;
+  },
+});
