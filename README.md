@@ -16,7 +16,7 @@ This **Core SDK** is designed for pilots: it records *what ran* and *how much it
 ### 1. Install
 
 ```bash
-npm install @drip-sdk/node
+npm install @drip-sdk/node@1.0.1
 ```
 
 ### 2. Set your API key
