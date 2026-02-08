@@ -10,7 +10,7 @@
  * import { ChatOpenAI } from '@langchain/openai';
  *
  * const handler = new DripCallbackHandler({
- *   apiKey: 'drip_sk_...',
+ *   apiKey: 'sk_live_...',
  *   customerId: 'cus_123',
  *   workflow: 'chatbot',
  * });
@@ -293,7 +293,7 @@ export interface DripCallbackHandlerOptions {
  * import { ChatOpenAI } from '@langchain/openai';
  *
  * const handler = new DripCallbackHandler({
- *   apiKey: 'drip_sk_...',
+ *   apiKey: 'sk_live_...',
  *   customerId: 'cus_123',
  *   workflow: 'chatbot',
  * });

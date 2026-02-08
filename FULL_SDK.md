@@ -29,8 +29,14 @@ npm install @drip-sdk/node
 ```typescript
 import { Drip } from '@drip-sdk/node';
 
-const drip = new Drip({ apiKey: process.env.DRIP_API_KEY! });
+// Secret key — full access (server-side only)
+const drip = new Drip({ apiKey: 'sk_live_...' });
+
+// Public key — usage, customers, billing (safe for client-side)
+const drip = new Drip({ apiKey: 'pk_live_...' });
 ```
+
+> **Key type detection:** The SDK auto-detects your key type from the prefix. Check `drip.keyType` to see if you're using a `'secret'`, `'public'`, or `'unknown'` key. Secret-key-only methods (webhooks, API key management, feature flags) will throw `DripError(403, 'PUBLIC_KEY_NOT_ALLOWED')` if called with a public key.
 
 ---
 
@@ -204,7 +210,9 @@ await drip.endRun(run.id, { status: 'COMPLETED' });
 | `getCustomer(customerId)` | Get customer details |
 | `listCustomers(options)` | List all customers |
 
-### Webhooks
+### Webhooks (Secret Key Only)
+
+All webhook management methods require a **secret key (`sk_`)**. Using a public key throws `DripError(403)`.
 
 | Method | Description |
 |--------|-------------|
@@ -214,7 +222,7 @@ await drip.endRun(run.id, { status: 'COMPLETED' });
 | `deleteWebhook(webhookId)` | Delete a webhook |
 | `testWebhook(webhookId)` | Test a webhook |
 | `rotateWebhookSecret(webhookId)` | Rotate webhook secret |
-| `Drip.verifyWebhookSignature()` | Verify webhook signature |
+| `Drip.verifyWebhookSignature()` | Verify webhook signature (static, no key needed) |
 
 ### Cost Estimation
 
@@ -300,7 +308,12 @@ await agent.invoke({ input: '...' }, { callbacks: [handler] });
 
 ## Webhooks
 
+> **Secret key required.** All webhook management methods require an `sk_` key. Public keys (`pk_`) will receive a `DripError` with code `PUBLIC_KEY_NOT_ALLOWED` (HTTP 403).
+
 ```typescript
+// Must use a secret key for webhook management
+const drip = new Drip({ apiKey: 'sk_live_...' });
+
 // Create webhook
 const webhook = await drip.createWebhook({
   url: 'https://yourapp.com/webhooks/drip',
@@ -308,7 +321,7 @@ const webhook = await drip.createWebhook({
 });
 // IMPORTANT: Store webhook.secret securely!
 
-// Verify incoming webhook
+// Verify incoming webhook (static method, no key needed)
 import { Drip } from '@drip-sdk/node';
 
 const isValid = Drip.verifyWebhookSignature({
@@ -365,6 +378,11 @@ try {
 } catch (error) {
   if (error instanceof DripError) {
     console.error(`Error: ${error.message} (${error.code})`);
+
+    // Handle public key access errors
+    if (error.code === 'PUBLIC_KEY_NOT_ALLOWED') {
+      console.error('This operation requires a secret key (sk_)');
+    }
   }
 }
 ```
@@ -384,6 +402,20 @@ await drip.charge({
   quantity: 1,
   idempotencyKey: 'req_abc123_step_1',
 });
+```
+
+### Public Key Restrictions
+
+Public keys (`pk_`) cannot access webhook, API key, or feature flag management endpoints. If you see `PUBLIC_KEY_NOT_ALLOWED` (403), switch to a secret key (`sk_`):
+
+```typescript
+// Wrong — public keys can't manage webhooks
+const drip = new Drip({ apiKey: 'pk_live_...' });
+await drip.createWebhook({ ... }); // Throws DripError(403)
+
+// Right — use a secret key for admin operations
+const drip = new Drip({ apiKey: 'sk_live_...' });
+await drip.createWebhook({ ... }); // Works
 ```
 
 ### Rate Limits

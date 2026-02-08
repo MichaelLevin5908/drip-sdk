@@ -11,6 +11,8 @@
  * @packageDocumentation
  */
 
+import { deterministicIdempotencyKey } from './idempotency.js';
+
 // ============================================================================
 // Configuration Types
 // ============================================================================
@@ -26,7 +28,13 @@ export interface DripConfig {
   /**
    * Your Drip API key. Obtain this from the Drip dashboard.
    * Falls back to `DRIP_API_KEY` environment variable if not provided.
-   * @example "drip_live_abc123..."
+   *
+   * Supports both key types:
+   * - **Secret keys** (`sk_live_...` / `sk_test_...`): Full access to all endpoints
+   * - **Public keys** (`pk_live_...` / `pk_test_...`): Safe for client-side use.
+   *   Can access usage tracking, customers, runs, and events.
+   *
+   * @example "sk_live_abc123..." or "pk_live_abc123..."
    */
   apiKey?: string;
 
@@ -148,6 +156,7 @@ export interface TrackUsageParams {
 
   /**
    * Unique key to prevent duplicate records.
+   * Auto-generated if not provided, ensuring every call is individually trackable.
    */
   idempotencyKey?: string;
 
@@ -416,47 +425,89 @@ export interface RecordRunResult {
 }
 
 /**
- * Full run timeline response.
+ * Full run timeline response from GET /runs/:id/timeline.
  */
 export interface RunTimeline {
-  run: {
-    id: string;
-    customerId: string;
-    customerName: string | null;
-    workflowId: string;
-    workflowName: string;
-    status: RunStatus;
-    startedAt: string | null;
-    endedAt: string | null;
-    durationMs: number | null;
-    errorMessage: string | null;
-    errorCode: string | null;
-    correlationId: string | null;
-    metadata: Record<string, unknown> | null;
-  };
-  timeline: Array<{
+  runId: string;
+  workflowId: string | null;
+  customerId: string;
+  status: RunStatus;
+  startedAt: string | null;
+  endedAt: string | null;
+  durationMs: number | null;
+  events: Array<{
     id: string;
     eventType: string;
-    quantity: number;
-    units: string | null;
+    actionName: string | null;
+    outcome: 'SUCCESS' | 'FAILED' | 'PENDING' | 'TIMEOUT' | 'RETRYING';
+    explanation: string | null;
     description: string | null;
-    costUnits: number | null;
     timestamp: string;
-    correlationId: string | null;
+    durationMs: number | null;
     parentEventId: string | null;
-    charge: {
-      id: string;
-      amountUsdc: string;
-      status: string;
+    retryOfEventId: string | null;
+    attemptNumber: number;
+    retriedByEventId: string | null;
+    costUsdc: string | null;
+    isRetry: boolean;
+    retryChain: {
+      totalAttempts: number;
+      finalOutcome: string;
+      events: string[];
+    } | null;
+    metadata: {
+      usageType: string;
+      quantity: number;
+      units: string | null;
     } | null;
   }>;
+  anomalies: Array<{
+    id: string;
+    type: string;
+    severity: 'LOW' | 'MEDIUM' | 'HIGH' | 'CRITICAL';
+    title: string;
+    explanation: string;
+    relatedEventIds: string[];
+    detectedAt: string;
+    status: 'OPEN' | 'INVESTIGATING' | 'RESOLVED' | 'FALSE_POSITIVE' | 'IGNORED';
+  }>;
+  summary: {
+    totalEvents: number;
+    byType: Record<string, number>;
+    byOutcome: Record<string, number>;
+    retriedEvents: number;
+    failedEvents: number;
+    totalCostUsdc: string | null;
+  };
+  hasMore: boolean;
+  nextCursor: string | null;
+}
+
+/**
+ * Run details response from GET /runs/:id.
+ */
+export interface RunDetails {
+  id: string;
+  customerId: string;
+  customerName: string | null;
+  workflowId: string;
+  workflowName: string;
+  status: RunStatus;
+  startedAt: string | null;
+  endedAt: string | null;
+  durationMs: number | null;
+  errorMessage: string | null;
+  errorCode: string | null;
+  correlationId: string | null;
+  metadata: Record<string, unknown> | null;
   totals: {
     eventCount: number;
     totalQuantity: string;
     totalCostUnits: string;
-    totalChargedUsdc: string;
   };
-  summary: string;
+  _links: {
+    timeline: string;
+  };
 }
 
 // ============================================================================
@@ -554,6 +605,15 @@ export class Drip {
   private readonly timeout: number;
 
   /**
+   * The type of API key being used.
+   *
+   * - `'secret'` — Full access (sk_live_... / sk_test_...)
+   * - `'public'` — Client-safe, restricted access (pk_live_... / pk_test_...)
+   * - `'unknown'` — Key format not recognized (legacy or custom)
+   */
+  readonly keyType: 'secret' | 'public' | 'unknown';
+
+  /**
    * Creates a new Drip SDK client.
    *
    * @param config - Configuration options (all optional, reads from env vars)
@@ -586,6 +646,15 @@ export class Drip {
     this.apiKey = apiKey;
     this.baseUrl = baseUrl || 'https://api.drip.dev/v1';
     this.timeout = config.timeout || 30000;
+
+    // Detect key type from prefix
+    if (apiKey.startsWith('sk_')) {
+      this.keyType = 'secret';
+    } else if (apiKey.startsWith('pk_')) {
+      this.keyType = 'public';
+    } else {
+      this.keyType = 'unknown';
+    }
   }
 
   /**
@@ -820,13 +889,16 @@ export class Drip {
    * ```
    */
   async trackUsage(params: TrackUsageParams): Promise<TrackUsageResult> {
+    const idempotencyKey = params.idempotencyKey
+      ?? deterministicIdempotencyKey('track', params.customerId, params.meter, params.quantity);
+
     return this.request<TrackUsageResult>('/usage/internal', {
       method: 'POST',
       body: JSON.stringify({
         customerId: params.customerId,
         usageType: params.meter,
         quantity: params.quantity,
-        idempotencyKey: params.idempotencyKey,
+        idempotencyKey,
         units: params.units,
         description: params.description,
         metadata: params.metadata,
@@ -895,25 +967,56 @@ export class Drip {
   }
 
   /**
-   * Gets a run's full timeline with events and computed totals.
+   * Gets run details with summary totals.
+   *
+   * For full event history with retry chains and anomalies, use `getRunTimeline()`.
    *
    * @param runId - The run ID
-   * @returns Full timeline with events and summary
+   * @returns Run details with totals
    *
    * @example
    * ```typescript
-   * const { run, timeline, totals, summary } = await drip.getRunTimeline('run_abc123');
+   * const run = await drip.getRun('run_abc123');
+   * console.log(`Status: ${run.status}, Events: ${run.totals.eventCount}`);
+   * ```
+   */
+  async getRun(runId: string): Promise<RunDetails> {
+    return this.request<RunDetails>(`/runs/${runId}`);
+  }
+
+  /**
+   * Gets a run's full timeline with events, anomalies, and analytics.
    *
-   * console.log(`Status: ${run.status}`);
-   * console.log(`Summary: ${summary}`);
+   * @param runId - The run ID
+   * @param options - Pagination and filtering options
+   * @returns Full timeline with events, anomalies, and summary
    *
-   * for (const event of timeline) {
-   *   console.log(`${event.eventType}: ${event.quantity} ${event.units}`);
+   * @example
+   * ```typescript
+   * const timeline = await drip.getRunTimeline('run_abc123');
+   *
+   * console.log(`Status: ${timeline.status}`);
+   * console.log(`Events: ${timeline.summary.totalEvents}`);
+   *
+   * for (const event of timeline.events) {
+   *   console.log(`${event.eventType}: ${event.outcome}`);
    * }
    * ```
    */
-  async getRunTimeline(runId: string): Promise<RunTimeline> {
-    return this.request<RunTimeline>(`/runs/${runId}`);
+  async getRunTimeline(
+    runId: string,
+    options?: { limit?: number; cursor?: string; includeAnomalies?: boolean; collapseRetries?: boolean },
+  ): Promise<RunTimeline> {
+    const params = new URLSearchParams();
+    if (options?.limit) params.set('limit', options.limit.toString());
+    if (options?.cursor) params.set('cursor', options.cursor);
+    if (options?.includeAnomalies !== undefined) params.set('includeAnomalies', String(options.includeAnomalies));
+    if (options?.collapseRetries !== undefined) params.set('collapseRetries', String(options.collapseRetries));
+
+    const query = params.toString();
+    const path = query ? `/runs/${runId}/timeline?${query}` : `/runs/${runId}/timeline`;
+
+    return this.request<RunTimeline>(path);
   }
 
   /**
@@ -934,9 +1037,12 @@ export class Drip {
    * ```
    */
   async emitEvent(params: EmitEventParams): Promise<EventResult> {
+    const idempotencyKey = params.idempotencyKey
+      ?? deterministicIdempotencyKey('evt', params.runId, params.eventType, params.quantity);
+
     return this.request<EventResult>('/run-events', {
       method: 'POST',
-      body: JSON.stringify(params),
+      body: JSON.stringify({ ...params, idempotencyKey }),
     });
   }
 
@@ -952,7 +1058,8 @@ export class Drip {
     success: boolean;
     created: number;
     duplicates: number;
-    events: Array<{ id: string; eventType: string; isDuplicate: boolean }>;
+    skipped: number;
+    events: Array<{ id: string; eventType: string; isDuplicate: boolean; skipped?: boolean; reason?: string }>;
   }> {
     return this.request('/run-events/batch', {
       method: 'POST',
@@ -1029,6 +1136,7 @@ export class Drip {
           workflowName = created.name;
         }
       } catch {
+        // Workflow resolution failed — fall back to using the slug directly.
         workflowId = params.workflow;
       }
     }
@@ -1057,7 +1165,7 @@ export class Drip {
         metadata: event.metadata,
         idempotencyKey: params.externalRunId
           ? `${params.externalRunId}:${event.eventType}:${index}`
-          : undefined,
+          : deterministicIdempotencyKey('run', run.id, event.eventType, index),
       }));
 
       const batchResult = await this.emitEventsBatch(batchEvents);

@@ -9,6 +9,7 @@
  */
 
 import { StreamMeter, type StreamMeterOptions } from './stream-meter.js';
+import { deterministicIdempotencyKey } from './idempotency.js';
 import {
   ResilienceManager,
   type ResilienceConfig,
@@ -135,7 +136,14 @@ export interface DripConfig {
   /**
    * Your Drip API key. Obtain this from the Drip dashboard.
    * Falls back to `DRIP_API_KEY` environment variable if not provided.
-   * @example "drip_live_abc123..."
+   *
+   * Supports both key types:
+   * - **Secret keys** (`sk_live_...` / `sk_test_...`): Full access to all endpoints
+   * - **Public keys** (`pk_live_...` / `pk_test_...`): Safe for client-side use.
+   *   Can access usage, customers, charges, sessions, analytics, etc.
+   *   Cannot access webhook management, API key management, or feature flags.
+   *
+   * @example "sk_live_abc123..." or "pk_live_abc123..."
    */
   apiKey?: string;
 
@@ -313,8 +321,8 @@ export interface ChargeParams {
   quantity: number;
 
   /**
-   * Unique key to prevent duplicate charges.
-   * If provided, retrying with the same key returns the original charge.
+   * Unique key to prevent duplicate charges and map each call to a single event.
+   * Auto-generated if not provided. Retrying with the same key returns the original charge.
    * @example "req_abc123"
    */
   idempotencyKey?: string;
@@ -1108,47 +1116,89 @@ export interface RecordRunResult {
 }
 
 /**
- * Full run timeline response.
+ * Full run timeline response from GET /runs/:id/timeline.
  */
 export interface RunTimeline {
-  run: {
-    id: string;
-    customerId: string;
-    customerName: string | null;
-    workflowId: string;
-    workflowName: string;
-    status: RunStatus;
-    startedAt: string | null;
-    endedAt: string | null;
-    durationMs: number | null;
-    errorMessage: string | null;
-    errorCode: string | null;
-    correlationId: string | null;
-    metadata: Record<string, unknown> | null;
-  };
-  timeline: Array<{
+  runId: string;
+  workflowId: string | null;
+  customerId: string;
+  status: RunStatus;
+  startedAt: string | null;
+  endedAt: string | null;
+  durationMs: number | null;
+  events: Array<{
     id: string;
     eventType: string;
-    quantity: number;
-    units: string | null;
+    actionName: string | null;
+    outcome: 'SUCCESS' | 'FAILED' | 'PENDING' | 'TIMEOUT' | 'RETRYING';
+    explanation: string | null;
     description: string | null;
-    costUnits: number | null;
     timestamp: string;
-    correlationId: string | null;
+    durationMs: number | null;
     parentEventId: string | null;
-    charge: {
-      id: string;
-      amountUsdc: string;
-      status: string;
+    retryOfEventId: string | null;
+    attemptNumber: number;
+    retriedByEventId: string | null;
+    costUsdc: string | null;
+    isRetry: boolean;
+    retryChain: {
+      totalAttempts: number;
+      finalOutcome: string;
+      events: string[];
+    } | null;
+    metadata: {
+      usageType: string;
+      quantity: number;
+      units: string | null;
     } | null;
   }>;
+  anomalies: Array<{
+    id: string;
+    type: string;
+    severity: 'LOW' | 'MEDIUM' | 'HIGH' | 'CRITICAL';
+    title: string;
+    explanation: string;
+    relatedEventIds: string[];
+    detectedAt: string;
+    status: 'OPEN' | 'INVESTIGATING' | 'RESOLVED' | 'FALSE_POSITIVE' | 'IGNORED';
+  }>;
+  summary: {
+    totalEvents: number;
+    byType: Record<string, number>;
+    byOutcome: Record<string, number>;
+    retriedEvents: number;
+    failedEvents: number;
+    totalCostUsdc: string | null;
+  };
+  hasMore: boolean;
+  nextCursor: string | null;
+}
+
+/**
+ * Run details response from GET /runs/:id.
+ */
+export interface RunDetails {
+  id: string;
+  customerId: string;
+  customerName: string | null;
+  workflowId: string;
+  workflowName: string;
+  status: RunStatus;
+  startedAt: string | null;
+  endedAt: string | null;
+  durationMs: number | null;
+  errorMessage: string | null;
+  errorCode: string | null;
+  correlationId: string | null;
+  metadata: Record<string, unknown> | null;
   totals: {
     eventCount: number;
     totalQuantity: string;
     totalCostUnits: string;
-    totalChargedUsdc: string;
   };
-  summary: string;
+  _links: {
+    timeline: string;
+  };
 }
 
 // ============================================================================
@@ -1285,6 +1335,15 @@ export class Drip {
   private readonly resilience: ResilienceManager | null;
 
   /**
+   * The type of API key being used.
+   *
+   * - `'secret'` — Full access (sk_live_... / sk_test_...)
+   * - `'public'` — Client-safe, restricted access (pk_live_... / pk_test_...)
+   * - `'unknown'` — Key format not recognized (legacy or custom)
+   */
+  readonly keyType: 'secret' | 'public' | 'unknown';
+
+  /**
    * Creates a new Drip SDK client.
    *
    * @param config - Configuration options
@@ -1294,18 +1353,18 @@ export class Drip {
    * ```typescript
    * // Basic usage
    * const drip = new Drip({
-   *   apiKey: 'drip_live_abc123...',
+   *   apiKey: 'sk_live_...',
    * });
    *
    * // With production resilience (recommended)
    * const drip = new Drip({
-   *   apiKey: 'drip_live_abc123...',
+   *   apiKey: 'sk_live_...',
    *   resilience: true,
    * });
    *
    * // High throughput mode
    * const drip = new Drip({
-   *   apiKey: 'drip_live_abc123...',
+   *   apiKey: 'sk_live_...',
    *   resilience: 'high-throughput',
    * });
    * ```
@@ -1325,6 +1384,15 @@ export class Drip {
     this.baseUrl = baseUrl || 'https://api.drip.dev/v1';
     this.timeout = config.timeout || 30000;
 
+    // Detect key type from prefix
+    if (apiKey.startsWith('sk_')) {
+      this.keyType = 'secret';
+    } else if (apiKey.startsWith('pk_')) {
+      this.keyType = 'public';
+    } else {
+      this.keyType = 'unknown';
+    }
+
     // Setup resilience manager
     if (config.resilience === true) {
       this.resilience = new ResilienceManager(createDefaultResilienceConfig());
@@ -1334,6 +1402,22 @@ export class Drip {
       this.resilience = new ResilienceManager(config.resilience);
     } else {
       this.resilience = null;
+    }
+  }
+
+  /**
+   * Asserts that the SDK was initialized with a secret key (sk_).
+   * Throws a clear error if a public key is being used for a secret-key-only operation.
+   * @internal
+   */
+  private assertSecretKey(operation: string): void {
+    if (this.keyType === 'public') {
+      throw new DripError(
+        `${operation} requires a secret key (sk_). You are using a public key (pk_), which cannot access this endpoint. ` +
+        `Use a secret key for webhook, API key, and feature flag management.`,
+        403,
+        'PUBLIC_KEY_NOT_ALLOWED',
+      );
     }
   }
 
@@ -1676,13 +1760,16 @@ export class Drip {
    * ```
    */
   async charge(params: ChargeParams): Promise<ChargeResult> {
+    const idempotencyKey = params.idempotencyKey
+      ?? deterministicIdempotencyKey('chg', params.customerId, params.meter, params.quantity);
+
     return this.request<ChargeResult>('/usage', {
       method: 'POST',
       body: JSON.stringify({
         customerId: params.customerId,
         usageType: params.meter,
         quantity: params.quantity,
-        idempotencyKey: params.idempotencyKey,
+        idempotencyKey,
         metadata: params.metadata,
       }),
     });
@@ -1826,13 +1913,16 @@ export class Drip {
    * ```
    */
   async trackUsage(params: TrackUsageParams): Promise<TrackUsageResult> {
+    const idempotencyKey = params.idempotencyKey
+      ?? deterministicIdempotencyKey('track', params.customerId, params.meter, params.quantity);
+
     return this.request<TrackUsageResult>('/usage/internal', {
       method: 'POST',
       body: JSON.stringify({
         customerId: params.customerId,
         usageType: params.meter,
         quantity: params.quantity,
-        idempotencyKey: params.idempotencyKey,
+        idempotencyKey,
         units: params.units,
         description: params.description,
         metadata: params.metadata,
@@ -2020,6 +2110,7 @@ export class Drip {
   async createWebhook(
     config: CreateWebhookParams,
   ): Promise<CreateWebhookResponse> {
+    this.assertSecretKey('createWebhook()');
     return this.request<CreateWebhookResponse>('/webhooks', {
       method: 'POST',
       body: JSON.stringify(config),
@@ -2040,6 +2131,7 @@ export class Drip {
    * ```
    */
   async listWebhooks(): Promise<ListWebhooksResponse> {
+    this.assertSecretKey('listWebhooks()');
     return this.request<ListWebhooksResponse>('/webhooks');
   }
 
@@ -2057,6 +2149,7 @@ export class Drip {
    * ```
    */
   async getWebhook(webhookId: string): Promise<Webhook> {
+    this.assertSecretKey('getWebhook()');
     return this.request<Webhook>(`/webhooks/${webhookId}`);
   }
 
@@ -2074,6 +2167,7 @@ export class Drip {
    * ```
    */
   async deleteWebhook(webhookId: string): Promise<DeleteWebhookResponse> {
+    this.assertSecretKey('deleteWebhook()');
     return this.request<DeleteWebhookResponse>(`/webhooks/${webhookId}`, {
       method: 'DELETE',
     });
@@ -2094,6 +2188,7 @@ export class Drip {
   async testWebhook(
     webhookId: string,
   ): Promise<{ message: string; deliveryId: string | null; status: string }> {
+    this.assertSecretKey('testWebhook()');
     return this.request<{
       message: string;
       deliveryId: string | null;
@@ -2121,6 +2216,7 @@ export class Drip {
   async rotateWebhookSecret(
     webhookId: string,
   ): Promise<{ secret: string; message: string }> {
+    this.assertSecretKey('rotateWebhookSecret()');
     return this.request<{ secret: string; message: string }>(
       `/webhooks/${webhookId}/rotate-secret`,
       { method: 'POST' },
@@ -2140,8 +2236,8 @@ export class Drip {
    * @example
    * ```typescript
    * const workflow = await drip.createWorkflow({
-   *   name: 'Prescription Intake',
-   *   slug: 'prescription_intake',
+   *   name: 'Document Processing',
+   *   slug: 'doc_processing',
    *   productSurface: 'AGENT',
    * });
    * ```
@@ -2227,36 +2323,66 @@ export class Drip {
   }
 
   /**
-   * Gets a run's full timeline with events and computed totals.
+   * Gets run details with summary totals.
+   *
+   * For full event history with retry chains and anomalies, use `getRunTimeline()`.
+   *
+   * @param runId - The run ID
+   * @returns Run details with totals
+   *
+   * @example
+   * ```typescript
+   * const run = await drip.getRun('run_abc123');
+   * console.log(`Status: ${run.status}, Events: ${run.totals.eventCount}`);
+   * ```
+   */
+  async getRun(runId: string): Promise<RunDetails> {
+    return this.request<RunDetails>(`/runs/${runId}`);
+  }
+
+  /**
+   * Gets a run's full timeline with events, anomalies, and analytics.
    *
    * This is the key endpoint for debugging "what happened" in an execution.
    *
    * @param runId - The run ID
-   * @returns Full timeline with events and summary
+   * @param options - Pagination and filtering options
+   * @returns Full timeline with events, anomalies, and summary
    *
    * @example
    * ```typescript
-   * const { run, timeline, totals, summary } = await drip.getRunTimeline('run_abc123');
+   * const timeline = await drip.getRunTimeline('run_abc123');
    *
-   * console.log(`Status: ${run.status}`);
-   * console.log(`Summary: ${summary}`);
-   * console.log(`Total cost: ${totals.totalCostUnits}`);
+   * console.log(`Status: ${timeline.status}`);
+   * console.log(`Events: ${timeline.summary.totalEvents}`);
    *
-   * for (const event of timeline) {
-   *   console.log(`${event.eventType}: ${event.quantity} ${event.units}`);
+   * for (const event of timeline.events) {
+   *   console.log(`${event.eventType}: ${event.outcome}`);
    * }
    * ```
    */
-  async getRunTimeline(runId: string): Promise<RunTimeline> {
-    return this.request<RunTimeline>(`/runs/${runId}`);
+  async getRunTimeline(
+    runId: string,
+    options?: { limit?: number; cursor?: string; includeAnomalies?: boolean; collapseRetries?: boolean },
+  ): Promise<RunTimeline> {
+    const params = new URLSearchParams();
+    if (options?.limit) params.set('limit', options.limit.toString());
+    if (options?.cursor) params.set('cursor', options.cursor);
+    if (options?.includeAnomalies !== undefined) params.set('includeAnomalies', String(options.includeAnomalies));
+    if (options?.collapseRetries !== undefined) params.set('collapseRetries', String(options.collapseRetries));
+
+    const query = params.toString();
+    const path = query ? `/runs/${runId}/timeline?${query}` : `/runs/${runId}/timeline`;
+
+    return this.request<RunTimeline>(path);
   }
 
   /**
    * Emits an event to a run.
    *
-   * Events can be stored idempotently when an `idempotencyKey` is provided.
+   * Each event is assigned a unique idempotency key (auto-generated if not provided).
+   * This maps each inference or API call to a single trackable event.
    * Use `Drip.generateIdempotencyKey()` for deterministic key generation.
-   * If `idempotencyKey` is omitted, repeated calls may create duplicate events.
    *
    * @param params - Event parameters
    * @returns The created event
@@ -2273,9 +2399,12 @@ export class Drip {
    * ```
    */
   async emitEvent(params: EmitEventParams): Promise<EventResult> {
+    const idempotencyKey = params.idempotencyKey
+      ?? deterministicIdempotencyKey('evt', params.runId, params.eventType, params.quantity);
+
     return this.request<EventResult>('/run-events', {
       method: 'POST',
-      body: JSON.stringify(params),
+      body: JSON.stringify({ ...params, idempotencyKey }),
     });
   }
 
@@ -2305,7 +2434,8 @@ export class Drip {
     success: boolean;
     created: number;
     duplicates: number;
-    events: Array<{ id: string; eventType: string; isDuplicate: boolean }>;
+    skipped: number;
+    events: Array<{ id: string; eventType: string; isDuplicate: boolean; skipped?: boolean; reason?: string }>;
   }> {
     return this.request('/run-events/batch', {
       method: 'POST',
@@ -2497,7 +2627,7 @@ export class Drip {
    * // Record a complete agent run in one call
    * const result = await drip.recordRun({
    *   customerId: 'cust_123',
-   *   workflow: 'prescription_intake',  // Auto-creates if doesn't exist
+   *   workflow: 'doc_processing',  // Auto-creates if doesn't exist
    *   events: [
    *     { eventType: 'agent.start', description: 'Started processing' },
    *     { eventType: 'tool.ocr', quantity: 3, units: 'pages', costUnits: 0.15 },
@@ -2516,7 +2646,7 @@ export class Drip {
    * // Record a failed run with error details
    * const result = await drip.recordRun({
    *   customerId: 'cust_123',
-   *   workflow: 'prescription_intake',
+   *   workflow: 'doc_processing',
    *   events: [
    *     { eventType: 'agent.start', description: 'Started processing' },
    *     { eventType: 'tool.ocr', quantity: 1, units: 'pages' },
@@ -2558,7 +2688,7 @@ export class Drip {
           workflowName = created.name;
         }
       } catch {
-        // If lookup fails, assume it's an ID
+        // Workflow resolution failed — fall back to using the slug directly.
         workflowId = params.workflow;
       }
     }
@@ -2587,7 +2717,7 @@ export class Drip {
         metadata: event.metadata,
         idempotencyKey: params.externalRunId
           ? `${params.externalRunId}:${event.eventType}:${index}`
-          : undefined,
+          : deterministicIdempotencyKey('run', run.id, event.eventType, index),
       }));
 
       const batchResult = await this.emitEventsBatch(batchEvents);
@@ -2666,16 +2796,11 @@ export class Drip {
       String(params.sequence ?? 0),
     ];
 
-    // Simple hash function for deterministic key generation
-    let hash = 0;
     const str = components.join('|');
-    for (let i = 0; i < str.length; i++) {
-      const char = str.charCodeAt(i);
-      hash = ((hash << 5) - hash) + char;
-      hash = hash & hash; // Convert to 32bit integer
-    }
+    const crypto = require('crypto') as typeof import('crypto');
+    const hash = crypto.createHash('sha256').update(str).digest('hex').slice(0, 32);
 
-    return `drip_${Math.abs(hash).toString(36)}_${params.stepName.slice(0, 16)}`;
+    return `drip_${hash}_${params.stepName.slice(0, 16)}`;
   }
 
   // ==========================================================================

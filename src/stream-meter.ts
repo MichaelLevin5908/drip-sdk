@@ -21,6 +21,7 @@
  */
 
 import type { ChargeResult, ChargeParams } from './index.js';
+import { deterministicIdempotencyKey } from './idempotency.js';
 
 /**
  * Options for creating a StreamMeter.
@@ -210,7 +211,7 @@ export class StreamMeter {
     // Generate idempotency key for this flush
     const idempotencyKey = this._options.idempotencyKey
       ? `${this._options.idempotencyKey}_flush_${this._flushCount}`
-      : undefined;
+      : deterministicIdempotencyKey('stream', this._options.customerId, this._options.meter, quantity, this._flushCount);
 
     // Charge the customer
     const chargeResult = await this._chargeFn({

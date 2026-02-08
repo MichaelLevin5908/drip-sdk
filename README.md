@@ -16,13 +16,17 @@ This **Core SDK** is designed for pilots: it records *what ran* and *how much it
 ### 1. Install
 
 ```bash
-npm install @drip-sdk/node@1.0.1
+npm install @drip-sdk/node
 ```
 
 ### 2. Set your API key
 
 ```bash
+# Secret key — full API access (server-side only, never expose publicly)
 export DRIP_API_KEY=sk_test_...
+
+# Or public key — read/write access for usage, customers, billing (safe for client-side)
+export DRIP_API_KEY=pk_test_...
 ```
 
 ### 3. Track usage (one line)
@@ -44,8 +48,11 @@ import { Drip } from '@drip-sdk/node';
 // Auto-reads DRIP_API_KEY from environment
 const drip = new Drip();
 
-// Or pass config explicitly
+// Or pass config explicitly with a secret key (full access)
 const drip = new Drip({ apiKey: 'sk_test_...' });
+
+// Or with a public key (safe for client-side, limited scope)
+const drip = new Drip({ apiKey: 'pk_test_...' });
 ```
 
 ### Full Example
@@ -102,6 +109,83 @@ main();
 **Event schema:** Payloads are schema-flexible. Drip stores events as structured JSON and does not enforce a fixed event taxonomy.
 
 Drip is append-only and idempotent-friendly. You can safely retry events.
+
+---
+
+## Idempotency Keys
+
+Every mutating SDK method (`charge`, `trackUsage`, `emitEvent`) accepts an optional `idempotencyKey` parameter. The server uses this key to deduplicate requests — if two requests share the same key, only the first is processed.
+
+`recordRun` generates idempotency keys internally for its batch events (using `externalRunId` when provided, otherwise deterministic keys).
+
+### Auto-generated keys (default)
+
+When you omit `idempotencyKey`, the SDK generates one automatically. The auto key is:
+
+- **Unique per call** — two separate calls with identical parameters produce different keys (a monotonic counter ensures this).
+- **Stable across retries** — the key is generated once and reused for all retry attempts of that call, so network retries are safely deduplicated.
+- **Deterministic** — no randomness; keys are reproducible for debugging.
+
+This means you get **free retry safety** with zero configuration.
+
+> **Note:** `wrapApiCall` generates a time-based key when no explicit `idempotencyKey` is provided. Pass your own key if you need deterministic deduplication with `wrapApiCall`.
+
+### When to pass explicit keys
+
+Pass your own `idempotencyKey` when you need **application-level deduplication** — e.g., to guarantee that a specific business operation is billed exactly once, even across process restarts:
+
+```typescript
+await drip.charge({
+  customerId: 'cust_123',
+  meter: 'api_calls',
+  quantity: 1,
+  idempotencyKey: `order_${orderId}_charge`, // your business-level key
+});
+```
+
+Common patterns:
+- `order_${orderId}` — one charge per order
+- `run_${runId}_step_${stepIndex}` — one charge per pipeline step
+- `invoice_${invoiceId}` — one charge per invoice
+
+### StreamMeter
+
+`StreamMeter` also auto-generates idempotency keys per flush. If you provide an `idempotencyKey` in the options, each flush appends a counter (`_flush_0`, `_flush_1`, etc.) to keep multi-flush scenarios safe.
+
+---
+
+## API Key Types
+
+Drip issues two key types per API key pair. Each has different access scopes:
+
+| Key Type | Prefix | Access | Use In |
+|----------|--------|--------|--------|
+| **Secret Key** | `sk_live_` / `sk_test_` | Full API access (all endpoints) | Server-side only |
+| **Public Key** | `pk_live_` / `pk_test_` | Usage tracking, customers, billing, analytics, sessions | Client-side safe |
+
+### What public keys **can** access
+- Usage tracking (`trackUsage`, `recordRun`, `startRun`, `emitEvent`, etc.)
+- Customer management (`createCustomer`, `getCustomer`, `listCustomers`)
+- Billing & charges (`charge`, `getBalance`, `listCharges`, etc.)
+- Pricing plans, sessions, analytics, usage caps, refunds
+
+### What public keys **cannot** access (secret key required)
+- Webhook management (`createWebhook`, `listWebhooks`, `deleteWebhook`, etc.)
+- API key management (create, rotate, revoke keys)
+- Feature flag management
+
+The SDK detects your key type automatically and will throw a `DripError` with code `PUBLIC_KEY_NOT_ALLOWED` (HTTP 403) if you attempt a secret-key-only operation with a public key.
+
+```typescript
+const drip = new Drip({ apiKey: 'pk_test_...' });
+console.log(drip.keyType); // 'public'
+
+// This works fine
+await drip.trackUsage({ customerId: 'cust_123', meter: 'api_calls', quantity: 1 });
+
+// This throws DripError(403, 'PUBLIC_KEY_NOT_ALLOWED')
+await drip.createWebhook({ url: '...', events: ['charge.succeeded'] });
+```
 
 ---
 

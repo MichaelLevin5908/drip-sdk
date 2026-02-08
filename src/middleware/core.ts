@@ -214,25 +214,13 @@ export function generatePaymentRequest(params: {
 }
 
 /**
- * Simple string hash for usageId generation.
- * Uses djb2 hash algorithm for better distribution.
+ * Hash a string into a bytes32 hex value using SHA-256.
  * In production, the server will use keccak256.
  */
 function hashString(input: string): string {
-  let primaryHash = 5381;
-  let secondaryHash = 52711;
-
-  for (let i = 0; i < input.length; i++) {
-    const char = input.charCodeAt(i);
-    primaryHash = ((primaryHash << 5) + primaryHash) ^ char;
-    secondaryHash = ((secondaryHash << 5) + secondaryHash) ^ char;
-  }
-
-  // Combine both hashes for more uniqueness
-  const combined = Math.abs(primaryHash * 31 + secondaryHash);
-  // Convert to hex and pad to 64 chars (for bytes32)
-  const hex = combined.toString(16).padStart(16, '0').slice(0, 16);
-  return `0x${hex.padEnd(64, '0')}`;
+  const { createHash } = require('crypto') as typeof import('crypto');
+  const hash = createHash('sha256').update(input).digest('hex');
+  return `0x${hash}`;
 }
 
 // ============================================================================
@@ -394,10 +382,6 @@ export async function processRequest<TRequest extends GenericRequest>(
 ): Promise<ProcessRequestResult> {
   // Check if we should skip in development
   if (config.skipInDevelopment && process.env.NODE_ENV === 'development') {
-    // Warn that billing is being skipped in development
-    console.warn(
-      '[Drip] Skipping billing in development mode. Set skipInDevelopment: false or NODE_ENV to production to enable billing.',
-    );
     // Return a mock successful charge for development
     const drip = createDripClient(config);
     const mockCharge: ChargeResult = {
