@@ -103,12 +103,15 @@ main();
 | `meter` | What you're measuring (tokens, requests, seconds, rows, etc.) |
 | `quantity` | Numeric usage for that meter |
 | `run` | A single execution or request lifecycle (success / failure / duration) |
+| `correlationId` | Optional. Your trace/request ID for linking Drip data with your APM (OpenTelemetry, Datadog, etc.) |
 
 **Status values:** `PENDING` | `RUNNING` | `COMPLETED` | `FAILED`
 
 **Event schema:** Payloads are schema-flexible. Drip stores events as structured JSON and does not enforce a fixed event taxonomy.
 
 Drip is append-only and idempotent-friendly. You can safely retry events.
+
+> **Distributed tracing:** Pass `correlationId` to `startRun()`, `recordRun()`, or `emitEvent()` to cross-reference Drip billing with your observability stack. See [FULL_SDK.md](./FULL_SDK.md#distributed-tracing-correlationid) for details.
 
 ---
 

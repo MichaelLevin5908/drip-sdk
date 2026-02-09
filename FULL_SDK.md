@@ -174,6 +174,48 @@ await drip.emitEvent({
 await drip.endRun(run.id, { status: 'COMPLETED' });
 ```
 
+### Distributed Tracing (correlationId)
+
+Pass a `correlationId` to link Drip runs with your existing observability tools (OpenTelemetry, Datadog, etc.):
+
+```typescript
+const run = await drip.startRun({
+  customerId: 'customer_123',
+  workflowSlug: 'document-processor',
+  correlationId: span.spanContext().traceId, // OpenTelemetry trace ID
+});
+
+// Or with recordRun:
+await drip.recordRun({
+  customerId: 'customer_123',
+  workflow: 'research-agent',
+  correlationId: 'trace_abc123',
+  events: [
+    { eventType: 'llm.call', quantity: 1700, units: 'tokens' },
+  ],
+  status: 'COMPLETED',
+});
+```
+
+**Key points:**
+- `correlationId` is **user-supplied**, not auto-generated — you provide your own trace/request ID
+- It's **optional** — skip it if you don't use distributed tracing
+- Use it to cross-reference Drip billing data with traces in your APM dashboard
+- Common values: OpenTelemetry `traceId`, Datadog `trace_id`, or your own `requestId`
+- Visible in the Drip dashboard timeline and available via `getRunTimeline()`
+
+Events also accept a `correlationId` for even finer-grained linking:
+
+```typescript
+await drip.emitEvent({
+  runId: run.id,
+  eventType: 'llm.call',
+  quantity: 1700,
+  units: 'tokens',
+  correlationId: span.spanContext().spanId, // Link to a specific span
+});
+```
+
 ---
 
 ## API Reference
