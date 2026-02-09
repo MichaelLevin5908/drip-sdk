@@ -77,8 +77,8 @@ async function main() {
     customerId: 'customer_123',
     workflow: 'research-agent',
     events: [
-      { eventType: 'llm.call', model: 'gpt-4', inputTokens: 500, outputTokens: 1200 },
-      { eventType: 'tool.call', name: 'web-search', duration: 1500 },
+      { eventType: 'llm.call', quantity: 1700, units: 'tokens' },
+      { eventType: 'tool.call', quantity: 1 },
     ],
     status: 'COMPLETED',
   });
