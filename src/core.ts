@@ -41,7 +41,7 @@ export interface DripConfig {
   /**
    * Base URL for the Drip API. Defaults to production API.
    * Falls back to `DRIP_BASE_URL` environment variable if not provided.
-   * @default "https://api.drip.dev/v1"
+   * @default "https://drip-app-hlunj.ondigitalocean.app/v1"
    */
   baseUrl?: string;
 
@@ -644,7 +644,7 @@ export class Drip {
     }
 
     this.apiKey = apiKey;
-    this.baseUrl = baseUrl || 'https://api.drip.dev/v1';
+    this.baseUrl = baseUrl || 'https://drip-app-hlunj.ondigitalocean.app/v1';
     this.timeout = config.timeout || 30000;
 
     // Detect key type from prefix
