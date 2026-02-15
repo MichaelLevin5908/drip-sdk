@@ -63,19 +63,22 @@ Understanding `trackUsage` vs `charge`:
 
 ## Quick Start
 
-### Track Usage + Check Balance
+### Create a Customer + Track Usage
 
 ```typescript
+// Create a customer first (at least one of externalCustomerId or onchainAddress required)
+const customer = await drip.createCustomer({ externalCustomerId: 'user_123' });
+
 // Track metered usage (logs to ledger, no billing)
 await drip.trackUsage({
-  customerId: 'customer_123',
+  customerId: customer.id,
   meter: 'api_calls',
   quantity: 1,
   metadata: { endpoint: '/v1/generate', method: 'POST' },
 });
 
 // Check accumulated usage
-const balance = await drip.getBalance('customer_123');
+const balance = await drip.getBalance(customer.id);
 console.log(`Balance: $${balance.balanceUsdc}`);
 ```
 
@@ -83,7 +86,7 @@ console.log(`Balance: $${balance.balanceUsdc}`);
 
 ```typescript
 const result = await drip.recordRun({
-  customerId: 'customer_123',
+  customerId: customer.id,
   workflow: 'research-agent',
   events: [
     { eventType: 'llm.call', quantity: 1700, units: 'tokens' },
@@ -117,11 +120,11 @@ for (const event of timeline.events) {
 ### RPC Providers
 
 ```typescript
-// Assume: apiKeyOwner is resolved from the request API key
-const apiKeyOwner = 'customer_123';
+// Create a customer for the API key owner
+const apiKeyOwner = await drip.createCustomer({ externalCustomerId: 'rpc_user_123' });
 
 await drip.trackUsage({
-  customerId: apiKeyOwner,
+  customerId: apiKeyOwner.id,
   meter: 'rpc_calls',
   quantity: 1,
   metadata: {
@@ -136,8 +139,10 @@ await drip.trackUsage({
 ### API Companies
 
 ```typescript
+const customer = await drip.createCustomer({ externalCustomerId: 'api_user_123' });
+
 await drip.trackUsage({
-  customerId: 'customer_123',
+  customerId: customer.id,
   meter: 'api_calls',
   quantity: 1,
   metadata: {
@@ -151,8 +156,10 @@ await drip.trackUsage({
 ### AI Agents
 
 ```typescript
+const customer = await drip.createCustomer({ externalCustomerId: 'user_123' });
+
 const run = await drip.startRun({
-  customerId: 'customer_123',
+  customerId: customer.id,
   workflowId: 'document-processor',
 });
 
@@ -179,15 +186,17 @@ await drip.endRun(run.id, { status: 'COMPLETED' });
 Pass a `correlationId` to link Drip runs with your existing observability tools (OpenTelemetry, Datadog, etc.):
 
 ```typescript
+const customer = await drip.createCustomer({ externalCustomerId: 'user_123' });
+
 const run = await drip.startRun({
-  customerId: 'customer_123',
+  customerId: customer.id,
   workflowId: 'document-processor',
   correlationId: span.spanContext().traceId, // OpenTelemetry trace ID
 });
 
 // Or with recordRun:
 await drip.recordRun({
-  customerId: 'customer_123',
+  customerId: customer.id,
   workflow: 'research-agent',
   correlationId: 'trace_abc123',
   events: [
@@ -290,8 +299,10 @@ All webhook management methods require a **secret key (`sk_`)**. Using a public 
 For LLM token streaming, accumulate usage locally and flush once:
 
 ```typescript
+const customer = await drip.createCustomer({ externalCustomerId: 'user_123' });
+
 const meter = drip.createStreamMeter({
-  customerId: 'customer_123',
+  customerId: customer.id,
   meter: 'tokens',
 });
 
@@ -339,9 +350,12 @@ app.use('/api', dripMiddleware({
 ```typescript
 import { DripCallbackHandler } from '@drip-sdk/node/langchain';
 
+// Create a customer first
+const customer = await drip.createCustomer({ externalCustomerId: 'user_123' });
+
 const handler = new DripCallbackHandler({
   drip,
-  customerId: 'customer_123',
+  customerId: customer.id,
 });
 
 // Automatically tracks all LLM calls and tool usage
@@ -380,27 +394,28 @@ const isValid = Drip.verifyWebhookSignature({
 ## Billing
 
 ```typescript
+// Create a customer first
+const customer = await drip.createCustomer({ externalCustomerId: 'user_123' });
+
 // Create a billable charge
 const result = await drip.charge({
-  customerId: 'customer_123',
+  customerId: customer.id,
   meter: 'api_calls',
   quantity: 1,
 });
 
 // Get customer balance
-const balance = await drip.getBalance('customer_123');
+const balance = await drip.getBalance(customer.id);
 console.log(`Balance: $${balance.balanceUsdc}`);
 
 // Query charges
-const chargeId = 'chg_abc123';
-const charge = await drip.getCharge(chargeId);
-const charges = await drip.listCharges({ customerId: 'customer_123' });
+const charge = await drip.getCharge(result.charge.id);
+const charges = await drip.listCharges({ customerId: customer.id });
 
 // Cost estimation from actual usage
-const customerId = 'customer_123';
 const startDate = new Date('2024-01-01');
 const endDate = new Date('2024-01-31');
-await drip.estimateFromUsage({ customerId, startDate, endDate });
+await drip.estimateFromUsage({ customerId: customer.id, startDate, endDate });
 
 // Cost estimation from hypothetical usage (no real data needed)
 const estimate = await drip.estimateFromHypothetical({
@@ -421,7 +436,7 @@ const result = await drip.wrapApiCall({
 // result.result = the API response, result.charge = the Drip charge
 
 // Checkout (fiat on-ramp)
-await drip.checkout({ customerId: 'customer_123', amountUsd: 5000 });
+await drip.checkout({ customerId: customer.id, amountUsd: 5000 });
 ```
 
 ---
@@ -431,9 +446,11 @@ await drip.checkout({ customerId: 'customer_123', amountUsd: 5000 });
 ```typescript
 import { Drip, DripError } from '@drip-sdk/node';
 
+const customer = await drip.createCustomer({ externalCustomerId: 'user_123' });
+
 try {
   await drip.charge({
-    customerId: 'customer_123',
+    customerId: customer.id,
     meter: 'api_calls',
     quantity: 1,
   });
@@ -458,8 +475,10 @@ try {
 Use idempotency keys to prevent duplicate charges on retries:
 
 ```typescript
+const customer = await drip.createCustomer({ externalCustomerId: 'user_123' });
+
 await drip.charge({
-  customerId: 'customer_123',
+  customerId: customer.id,
   meter: 'api_calls',
   quantity: 1,
   idempotencyKey: 'req_abc123_step_1',
