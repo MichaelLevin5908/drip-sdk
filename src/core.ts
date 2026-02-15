@@ -1110,70 +1110,92 @@ export class Drip {
    * ```
    */
   async recordRun(params: RecordRunParams): Promise<RecordRunResult> {
+    // Try single-call endpoint first; fall back to 4-step orchestration
+    // if the server doesn't support it yet (404).
+    try {
+      return await this.request<RecordRunResult>('/runs/record', {
+        method: 'POST',
+        body: JSON.stringify({
+          customerId: params.customerId,
+          workflow: params.workflow,
+          events: params.events,
+          status: params.status,
+          errorMessage: params.errorMessage,
+          errorCode: params.errorCode,
+          externalRunId: params.externalRunId,
+          correlationId: params.correlationId,
+          metadata: params.metadata,
+        }),
+      });
+    } catch (err) {
+      if (err instanceof DripError && err.statusCode === 404) {
+        return this._recordRunFallback(params);
+      }
+      throw err;
+    }
+  }
+
+  /**
+   * 4-step orchestration fallback for servers without POST /runs/record.
+   * @internal
+   */
+  private async _recordRunFallback(params: RecordRunParams): Promise<RecordRunResult> {
     const startTime = Date.now();
 
-    // Step 1: Ensure workflow exists (get or create)
+    // Step 1: Resolve workflow
     let workflowId = params.workflow;
     let workflowName = params.workflow;
-
-    if (!params.workflow.startsWith('wf_')) {
-      try {
-        const workflows = await this.listWorkflows();
-        const existing = workflows.data.find(
-          (w) => w.slug === params.workflow || w.id === params.workflow,
-        );
-
-        if (existing) {
-          workflowId = existing.id;
-          workflowName = existing.name;
-        } else {
-          const created = await this.createWorkflow({
-            name: params.workflow.replace(/[_-]/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase()),
-            slug: params.workflow,
-            productSurface: 'CUSTOM',
-          });
-          workflowId = created.id;
-          workflowName = created.name;
-        }
-      } catch {
-        // Workflow resolution failed — fall back to using the slug directly.
-        workflowId = params.workflow;
-      }
+    const { data: workflows } = await this.listWorkflows();
+    const match = workflows.find(
+      (w) => w.slug === params.workflow || w.id === params.workflow,
+    );
+    if (match) {
+      workflowId = match.id;
+      workflowName = match.name;
+    } else {
+      const created = await this.request<Workflow>('/workflows', {
+        method: 'POST',
+        body: JSON.stringify({
+          name: params.workflow.replace(/[_-]/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase()),
+          slug: params.workflow,
+          productSurface: 'CUSTOM',
+        }),
+      });
+      workflowId = created.id;
+      workflowName = created.name;
     }
 
-    // Step 2: Create the run
+    // Step 2: Start run
     const run = await this.startRun({
       customerId: params.customerId,
       workflowId,
-      externalRunId: params.externalRunId,
       correlationId: params.correlationId,
+      externalRunId: params.externalRunId,
       metadata: params.metadata,
     });
 
-    // Step 3: Emit all events in batch
+    // Step 3: Emit events
     let eventsCreated = 0;
     let eventsDuplicates = 0;
-
     if (params.events.length > 0) {
-      const batchEvents = params.events.map((event, index) => ({
+      const batchEvents = params.events.map((evt, i) => ({
         runId: run.id,
-        eventType: event.eventType,
-        quantity: event.quantity,
-        units: event.units,
-        description: event.description,
-        costUnits: event.costUnits,
-        metadata: event.metadata,
+        eventType: evt.eventType,
+        quantity: evt.quantity ?? 1,
+        units: evt.units,
+        description: evt.description,
+        costUnits: evt.costUnits,
+        metadata: evt.metadata,
         idempotencyKey: params.externalRunId
-          ? `${params.externalRunId}:${event.eventType}:${index}`
-          : deterministicIdempotencyKey('run', run.id, event.eventType, index),
+          ? `${params.externalRunId}:${evt.eventType}:${i}`
+          : undefined,
       }));
-
       const batchResult = await this.emitEventsBatch(batchEvents);
       eventsCreated = batchResult.created;
       eventsDuplicates = batchResult.duplicates;
     }
 
-    // Step 4: End the run
+    // Step 4: End run
     const endResult = await this.endRun(run.id, {
       status: params.status,
       errorMessage: params.errorMessage,
@@ -1181,28 +1203,19 @@ export class Drip {
     });
 
     const durationMs = Date.now() - startTime;
-
-    // Build summary
-    const eventSummary = params.events.length > 0
-      ? `${eventsCreated} events recorded`
-      : 'no events';
-    const statusEmoji = params.status === 'COMPLETED' ? '✓' : params.status === 'FAILED' ? '✗' : '○';
-    const summary = `${statusEmoji} ${workflowName}: ${eventSummary} (${endResult.durationMs ?? durationMs}ms)`;
+    const statusIcon = params.status === 'COMPLETED' ? '\u2713' : params.status === 'FAILED' ? '\u2717' : '\u25CB';
 
     return {
       run: {
         id: run.id,
         workflowId,
         workflowName,
-        status: params.status,
-        durationMs: endResult.durationMs,
+        status: endResult.status as RunStatus,
+        durationMs: endResult.durationMs ?? durationMs,
       },
-      events: {
-        created: eventsCreated,
-        duplicates: eventsDuplicates,
-      },
-      totalCostUnits: endResult.totalCostUnits,
-      summary,
+      events: { created: eventsCreated, duplicates: eventsDuplicates },
+      totalCostUnits: endResult.totalCostUnits ?? null,
+      summary: `${statusIcon} ${workflowName}: ${eventsCreated} events recorded (${endResult.durationMs ?? durationMs}ms)`,
     };
   }
 }
