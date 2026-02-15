@@ -29,13 +29,16 @@ export DRIP_API_KEY=sk_test_...
 export DRIP_API_KEY=pk_test_...
 ```
 
-### 3. Track usage (one line)
+### 3. Create a customer and track usage
 
 ```typescript
 import { drip } from '@drip-sdk/node';
 
-// Track usage - that's it
-await drip.trackUsage({ customerId: 'cust_123', meter: 'api_calls', quantity: 1 });
+// Create a customer first
+const customer = await drip.createCustomer({ externalCustomerId: 'user_123' });
+
+// Track usage — that's it
+await drip.trackUsage({ customerId: customer.id, meter: 'api_calls', quantity: 1 });
 ```
 
 The `drip` singleton reads `DRIP_API_KEY` from your environment automatically.
@@ -64,9 +67,12 @@ async function main() {
   // Verify connectivity
   await drip.ping();
 
+  // Create a customer (at least one of externalCustomerId or onchainAddress required)
+  const customer = await drip.createCustomer({ externalCustomerId: 'user_123' });
+
   // Record usage
   await drip.trackUsage({
-    customerId: 'customer_123',
+    customerId: customer.id,
     meter: 'llm_tokens',
     quantity: 842,
     metadata: { model: 'gpt-4o-mini' },
@@ -74,7 +80,7 @@ async function main() {
 
   // Record an execution lifecycle
   await drip.recordRun({
-    customerId: 'customer_123',
+    customerId: customer.id,
     workflow: 'research-agent',
     events: [
       { eventType: 'llm.call', quantity: 1700, units: 'tokens' },
@@ -83,7 +89,7 @@ async function main() {
     status: 'COMPLETED',
   });
 
-  console.log('Usage + run recorded');
+  console.log(`Customer ${customer.id}: usage + run recorded`);
 }
 
 main();
@@ -138,8 +144,10 @@ This means you get **free retry safety** with zero configuration.
 Pass your own `idempotencyKey` when you need **application-level deduplication** — e.g., to guarantee that a specific business operation is billed exactly once, even across process restarts:
 
 ```typescript
+const customer = await drip.createCustomer({ externalCustomerId: 'user_123' });
+
 await drip.charge({
-  customerId: 'cust_123',
+  customerId: customer.id,
   meter: 'api_calls',
   quantity: 1,
   idempotencyKey: `order_${orderId}_charge`, // your business-level key
@@ -183,8 +191,9 @@ The SDK detects your key type automatically and will throw a `DripError` with co
 const drip = new Drip({ apiKey: 'pk_test_...' });
 console.log(drip.keyType); // 'public'
 
-// This works fine
-await drip.trackUsage({ customerId: 'cust_123', meter: 'api_calls', quantity: 1 });
+// Create a customer first, then track usage
+const customer = await drip.createCustomer({ externalCustomerId: 'user_123' });
+await drip.trackUsage({ customerId: customer.id, meter: 'api_calls', quantity: 1 });
 
 // This throws DripError(403, 'PUBLIC_KEY_NOT_ALLOWED')
 await drip.createWebhook({ url: '...', events: ['charge.succeeded'] });
@@ -215,7 +224,38 @@ await drip.createWebhook({ url: '...', events: ['charge.succeeded'] });
 | `emitEvent(params)` | Log event within run |
 | `emitEventsBatch(params)` | Batch log events |
 | `endRun(runId, params)` | Complete execution trace |
+| `getRun(runId)` | Get run details and summary |
 | `getRunTimeline(runId)` | Get execution timeline |
+
+### Creating Customers
+
+All parameters are optional, but at least one of `externalCustomerId` or `onchainAddress` must be provided:
+
+```typescript
+// Simplest — just your internal user ID
+const customer = await drip.createCustomer({ externalCustomerId: 'user_123' });
+
+// With an on-chain address (for on-chain billing)
+const customer = await drip.createCustomer({
+  onchainAddress: '0x1234...',
+  externalCustomerId: 'user_123',
+});
+
+// Internal/non-billing customer (for tracking only)
+const customer = await drip.createCustomer({
+  externalCustomerId: 'internal-team',
+  isInternal: true,
+});
+```
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `externalCustomerId` | `string` | No* | Your internal user/account ID |
+| `onchainAddress` | `string` | No* | Customer's Ethereum address |
+| `isInternal` | `boolean` | No | Mark as internal (non-billing). Default: `false` |
+| `metadata` | `object` | No | Arbitrary key-value metadata |
+
+\*At least one of `externalCustomerId` or `onchainAddress` is required.
 
 ---
 

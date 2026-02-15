@@ -202,18 +202,21 @@ export interface DripConfig {
 export interface CreateCustomerParams {
   /**
    * Your internal customer/user ID for reconciliation.
+   * At least one of `externalCustomerId` or `onchainAddress` is required.
    * @example "user_12345"
    */
   externalCustomerId?: string;
 
   /**
    * The customer's Drip Smart Account address (derived from their EOA).
+   * At least one of `externalCustomerId` or `onchainAddress` is required.
    * @example "0x1234567890abcdef..."
    */
-  onchainAddress: string;
+  onchainAddress?: string;
 
   /**
    * Whether this customer is internal-only (usage tracked but not billed).
+   * @default false
    */
   isInternal?: boolean;
 
@@ -236,8 +239,8 @@ export interface Customer {
   /** Your external customer ID (if provided) */
   externalCustomerId: string | null;
 
-  /** Customer's on-chain address */
-  onchainAddress: string;
+  /** Customer's on-chain address (null for internal-only customers) */
+  onchainAddress: string | null;
 
   /** Whether this customer is internal-only (usage tracked but not billed) */
   isInternal: boolean;
