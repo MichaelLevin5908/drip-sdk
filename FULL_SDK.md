@@ -76,7 +76,7 @@ await drip.trackUsage({
 
 // Check accumulated usage
 const balance = await drip.getBalance('customer_123');
-console.log(`Total usage: $${balance.totalUsageUsd}`);
+console.log(`Balance: $${balance.balanceUsdc}`);
 ```
 
 ### Log Agent Runs
@@ -153,7 +153,7 @@ await drip.trackUsage({
 ```typescript
 const run = await drip.startRun({
   customerId: 'customer_123',
-  workflowSlug: 'document-processor',
+  workflowId: 'document-processor',
 });
 
 await drip.emitEvent({
@@ -166,9 +166,9 @@ await drip.emitEvent({
 await drip.emitEvent({
   runId: run.id,
   eventType: 'llm.summarize',
-  model: 'gpt-4',
-  inputTokens: 10000,
-  outputTokens: 500,
+  quantity: 10500,
+  units: 'tokens',
+  metadata: { model: 'gpt-4', inputTokens: 10000, outputTokens: 500 },
 });
 
 await drip.endRun(run.id, { status: 'COMPLETED' });
@@ -181,7 +181,7 @@ Pass a `correlationId` to link Drip runs with your existing observability tools 
 ```typescript
 const run = await drip.startRun({
   customerId: 'customer_123',
-  workflowSlug: 'document-processor',
+  workflowId: 'document-processor',
   correlationId: span.spanContext().traceId, // OpenTelemetry trace ID
 });
 
@@ -226,6 +226,7 @@ await drip.emitEvent({
 |--------|-------------|
 | `trackUsage(params)` | Log usage to ledger (no billing) |
 | `charge(params)` | Create a billable charge |
+| `wrapApiCall(params)` | Wrap external API call with guaranteed usage recording |
 | `getBalance(customerId)` | Get balance and usage summary |
 | `getCharge(chargeId)` | Get charge details |
 | `listCharges(options)` | List all charges |
@@ -240,6 +241,7 @@ await drip.emitEvent({
 | `emitEvent(params)` | Log event within run |
 | `emitEventsBatch(params)` | Batch log events |
 | `endRun(runId, params)` | Complete execution trace |
+| `getRun(runId)` | Get run details |
 | `getRunTimeline(runId)` | Get execution timeline |
 | `createWorkflow(params)` | Create a workflow |
 | `listWorkflows()` | List all workflows |
@@ -394,11 +396,29 @@ const chargeId = 'chg_abc123';
 const charge = await drip.getCharge(chargeId);
 const charges = await drip.listCharges({ customerId: 'customer_123' });
 
-// Cost estimation
+// Cost estimation from actual usage
 const customerId = 'customer_123';
 const startDate = new Date('2024-01-01');
 const endDate = new Date('2024-01-31');
 await drip.estimateFromUsage({ customerId, startDate, endDate });
+
+// Cost estimation from hypothetical usage (no real data needed)
+const estimate = await drip.estimateFromHypothetical({
+  items: [
+    { usageType: 'api_calls', quantity: 1000 },
+    { usageType: 'tokens', quantity: 50000 },
+  ],
+});
+console.log(`Estimated cost: $${estimate.estimatedTotalUsdc}`);
+
+// Wrap external API call with guaranteed usage recording
+const result = await drip.wrapApiCall({
+  customerId: 'customer_123',
+  meter: 'tokens',
+  call: async () => openai.chat.completions.create({ model: 'gpt-4', messages }),
+  extractUsage: (response) => response.usage.total_tokens,
+});
+// result.result = the API response, result.charge = the Drip charge
 
 // Checkout (fiat on-ramp)
 await drip.checkout({ customerId: 'customer_123', amountUsd: 5000 });
