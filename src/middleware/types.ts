@@ -107,7 +107,7 @@ export interface DripContext {
   /**
    * Whether this was a replayed request (idempotency key matched).
    */
-  isReplay: boolean;
+  isDuplicate: boolean;
 }
 
 // ============================================================================

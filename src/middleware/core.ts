@@ -359,7 +359,7 @@ export interface ProcessRequestSuccess {
   state: MiddlewareState;
   charge: ChargeResult;
   drip: Drip;
-  isReplay: boolean;
+  isDuplicate: boolean;
 }
 
 /**
@@ -387,7 +387,7 @@ export async function processRequest<TRequest extends GenericRequest>(
     const mockCharge: ChargeResult = {
       success: true,
       usageEventId: 'dev_usage_event',
-      isReplay: false,
+      isDuplicate: false,
       charge: {
         id: 'dev_charge',
         amountUsdc: '0.00',
@@ -406,7 +406,7 @@ export async function processRequest<TRequest extends GenericRequest>(
       },
       charge: mockCharge,
       drip,
-      isReplay: false,
+      isDuplicate: false,
     };
   }
 
@@ -458,7 +458,7 @@ export async function processRequest<TRequest extends GenericRequest>(
         state,
         charge: chargeResult,
         drip,
-        isReplay: chargeResult.isReplay ?? false,
+        isDuplicate: chargeResult.isDuplicate ?? false,
       };
     } catch (error) {
       if (error instanceof DripError) {

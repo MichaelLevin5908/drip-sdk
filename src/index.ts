@@ -213,6 +213,11 @@ export interface CreateCustomerParams {
   onchainAddress: string;
 
   /**
+   * Whether this customer is internal-only (usage tracked but not billed).
+   */
+  isInternal?: boolean;
+
+  /**
    * Additional metadata to store with the customer.
    */
   metadata?: Record<string, unknown>;
@@ -233,6 +238,12 @@ export interface Customer {
 
   /** Customer's on-chain address */
   onchainAddress: string;
+
+  /** Whether this customer is internal-only (usage tracked but not billed) */
+  isInternal: boolean;
+
+  /** Customer status */
+  status: 'ACTIVE' | 'LOW_BALANCE' | 'PAUSED';
 
   /** Custom metadata */
   metadata: Record<string, unknown> | null;
@@ -343,8 +354,8 @@ export interface ChargeResult {
   /** The usage event ID */
   usageEventId: string;
 
-  /** True if this was an idempotent replay (returned cached result from previous request) */
-  isReplay: boolean;
+  /** True if this was a deduplicated replay (returned cached result from previous request) */
+  isDuplicate: boolean;
 
   /** Details about the charge */
   charge: {
@@ -370,7 +381,7 @@ export interface ChargeResult {
  */
 export type ChargeStatus =
   | 'PENDING'
-  | 'SUBMITTED'
+  | 'PENDING_SETTLEMENT'
   | 'CONFIRMED'
   | 'FAILED'
   | 'REFUNDED';
@@ -600,6 +611,15 @@ export interface Webhook {
   /** Whether the webhook is active */
   isActive: boolean;
 
+  /** Health status of the webhook endpoint */
+  healthStatus: 'HEALTHY' | 'DEGRADED' | 'UNHEALTHY';
+
+  /** Number of consecutive delivery failures */
+  consecutiveFailures: number;
+
+  /** ISO timestamp of last health status change */
+  lastHealthChange: string | null;
+
   /** ISO timestamp of creation */
   createdAt: string;
 
@@ -608,10 +628,10 @@ export interface Webhook {
 
   /** Delivery statistics */
   stats?: {
-    totalDeliveries: number;
-    successfulDeliveries: number;
-    failedDeliveries: number;
-    lastDeliveryAt: string | null;
+    total: number;
+    delivered: number;
+    failed: number;
+    pending: number;
   };
 }
 
@@ -742,6 +762,8 @@ export interface Workflow {
   name: string;
   slug: string;
   productSurface: string;
+  /** Blockchain chain (if applicable) */
+  chain: string | null;
   description: string | null;
   isActive: boolean;
   createdAt: string;
@@ -1121,8 +1143,13 @@ export interface RecordRunResult {
 export interface RunTimeline {
   runId: string;
   workflowId: string | null;
+  workflowName: string | null;
   customerId: string;
   status: RunStatus;
+  correlationId: string | null;
+  metadata: Record<string, unknown> | null;
+  errorMessage: string | null;
+  errorCode: string | null;
   startedAt: string | null;
   endedAt: string | null;
   durationMs: number | null;
@@ -2005,8 +2032,8 @@ export class Drip {
    */
   async getChargeStatus(
     chargeId: string,
-  ): Promise<{ status: ChargeStatus; txHash?: string }> {
-    return this.request<{ status: ChargeStatus; txHash?: string }>(
+  ): Promise<{ id: string; status: ChargeStatus; txHash: string | null; confirmedAt: string | null; failureReason: string | null }> {
+    return this.request<{ id: string; status: ChargeStatus; txHash: string | null; confirmedAt: string | null; failureReason: string | null }>(
       `/charges/${chargeId}/status`,
     );
   }

@@ -81,7 +81,7 @@ export interface StreamMeterFlushResult {
   charge: ChargeResult['charge'] | null;
 
   /** Whether this was an idempotent replay */
-  isReplay: boolean;
+  isDuplicate: boolean;
 }
 
 /**
@@ -203,7 +203,7 @@ export class StreamMeter {
         success: true,
         quantity: 0,
         charge: null,
-        isReplay: false,
+        isDuplicate: false,
       };
       return result;
     }
@@ -229,7 +229,7 @@ export class StreamMeter {
       success: chargeResult.success,
       quantity,
       charge: chargeResult.charge,
-      isReplay: chargeResult.isReplay,
+      isDuplicate: chargeResult.isDuplicate,
     };
 
     // Invoke callback if provided

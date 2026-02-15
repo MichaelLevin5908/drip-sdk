@@ -298,7 +298,7 @@ export function withDrip(
       drip: result.drip,
       customerId: result.state.customerId,
       charge: result.charge,
-      isReplay: result.isReplay,
+      isDuplicate: result.isDuplicate,
       params: routeContext?.params,
     };
 

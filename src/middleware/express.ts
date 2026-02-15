@@ -302,7 +302,7 @@ export function dripMiddleware(config: ExpressDripConfig): ExpressMiddleware {
       drip: result.drip,
       customerId: result.state.customerId,
       charge: result.charge,
-      isReplay: result.isReplay,
+      isDuplicate: result.isDuplicate,
     };
 
     // Attach to request if configured
